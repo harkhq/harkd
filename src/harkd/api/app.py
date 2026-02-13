@@ -44,20 +44,14 @@ async def lifespan(app: FastAPI):
         if hasattr(service, "_processing_tasks"):
             for recording_id, task in list(service._processing_tasks.items()):
                 if not task.done():
-                    logger.info(
-                        f"Cancelling background task for recording {recording_id}"
-                    )
+                    logger.info(f"Cancelling background task for recording {recording_id}")
                     task.cancel()
                     try:
                         await asyncio.wait_for(task, timeout=5.0)
                     except asyncio.CancelledError:
-                        logger.info(
-                            f"Task for recording {recording_id} cancelled successfully"
-                        )
+                        logger.info(f"Task for recording {recording_id} cancelled successfully")
                     except TimeoutError:
-                        logger.warning(
-                            f"Task for recording {recording_id} did not cancel in time"
-                        )
+                        logger.warning(f"Task for recording {recording_id} did not cancel in time")
                     except Exception as e:
                         logger.error(
                             f"Exception during task cancellation for {recording_id}: {e}",
@@ -137,9 +131,7 @@ def _add_exception_handlers(app: FastAPI) -> None:
             )
         )
 
-        return JSONResponse(
-            status_code=status_code, content=error_response.model_dump()
-        )
+        return JSONResponse(status_code=status_code, content=error_response.model_dump())
 
 
 def _add_health_endpoint(app: FastAPI) -> None:

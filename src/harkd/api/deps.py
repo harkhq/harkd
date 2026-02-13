@@ -74,6 +74,4 @@ def get_recording_service(
 
 # Type aliases for dependency injection
 RecordingServiceDep = Annotated[RecordingService, Depends(get_recording_service)]
-VoiceProfileServiceDep = Annotated[
-    VoiceProfileService, Depends(get_voice_profile_service)
-]
+VoiceProfileServiceDep = Annotated[VoiceProfileService, Depends(get_voice_profile_service)]

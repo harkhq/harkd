@@ -268,9 +268,7 @@ class Diarizer:
             result = whisperx.assign_word_speakers(diarize_segments, result)
 
             # Convert to our format
-            diarization_result = self._convert_result(
-                result, detected_language, language
-            )
+            diarization_result = self._convert_result(result, detected_language, language)
 
             logger.info(
                 f"Diarization complete: {len(diarization_result.segments)} segments, "

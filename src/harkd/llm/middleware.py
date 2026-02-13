@@ -19,9 +19,7 @@ class Middleware(ABC):
     """Base class for LLM middleware."""
 
     @abstractmethod
-    async def __call__(
-        self, request: dict[str, Any], next_fn: Callable[..., Any]
-    ) -> LLMResponse:
+    async def __call__(self, request: dict[str, Any], next_fn: Callable[..., Any]) -> LLMResponse:
         """Process request through middleware.
 
         Args:
@@ -36,9 +34,7 @@ class Middleware(ABC):
 class LoggingMiddleware(Middleware):
     """Logs LLM request/response details."""
 
-    async def __call__(
-        self, request: dict[str, Any], next_fn: Callable[..., Any]
-    ) -> LLMResponse:
+    async def __call__(self, request: dict[str, Any], next_fn: Callable[..., Any]) -> LLMResponse:
         msg_count = len(request.get("messages", []))
         logger.info(f"LLM request: {msg_count} messages")
         start = time.monotonic()
@@ -67,9 +63,7 @@ class TokenStatsMiddleware(Middleware):
         """Get cumulative token usage."""
         return self._total_usage
 
-    async def __call__(
-        self, request: dict[str, Any], next_fn: Callable[..., Any]
-    ) -> LLMResponse:
+    async def __call__(self, request: dict[str, Any], next_fn: Callable[..., Any]) -> LLMResponse:
         response = await next_fn(request)
 
         if response.usage:
@@ -87,9 +81,7 @@ class CacheMiddleware(Middleware):
         self._cache: dict[str, tuple[float, LLMResponse]] = {}
         self._ttl = ttl_seconds
 
-    async def __call__(
-        self, request: dict[str, Any], next_fn: Callable[..., Any]
-    ) -> LLMResponse:
+    async def __call__(self, request: dict[str, Any], next_fn: Callable[..., Any]) -> LLMResponse:
         cache_key = self._make_key(request)
 
         # Check cache

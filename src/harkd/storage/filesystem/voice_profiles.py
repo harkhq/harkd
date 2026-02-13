@@ -81,9 +81,7 @@ class FilesystemVoiceProfileStorage(VoiceProfileStorage):
                 return []
 
             # Get all JSON files
-            profile_files = await asyncio.to_thread(
-                lambda: list(self.profiles_dir.glob("*.json"))
-            )
+            profile_files = await asyncio.to_thread(lambda: list(self.profiles_dir.glob("*.json")))
 
             profiles = []
             for profile_file in profile_files:
@@ -135,9 +133,7 @@ class FilesystemVoiceProfileStorage(VoiceProfileStorage):
 
     # Helper methods
 
-    async def _write_profile(
-        self, profile_file: Path, profile: StorageVoiceProfile
-    ) -> None:
+    async def _write_profile(self, profile_file: Path, profile: StorageVoiceProfile) -> None:
         """Write voice profile to JSON file atomically.
 
         Uses write-to-temp-then-rename pattern for crash safety.
@@ -146,9 +142,7 @@ class FilesystemVoiceProfileStorage(VoiceProfileStorage):
 
         def write_atomic():
             parent_dir = str(profile_file.parent)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=parent_dir, suffix=".tmp", prefix=".profile-"
-            )
+            fd, tmp_path = tempfile.mkstemp(dir=parent_dir, suffix=".tmp", prefix=".profile-")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)

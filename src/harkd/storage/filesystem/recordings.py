@@ -114,9 +114,7 @@ class FilesystemRecordingStorage(RecordingStorage):
                     recording = await self._read_metadata(metadata_file)
                     recordings.append(recording)
                 except Exception:
-                    logger.warning(
-                        f"Skipping corrupted recording metadata: {metadata_file}"
-                    )
+                    logger.warning(f"Skipping corrupted recording metadata: {metadata_file}")
                     continue
 
             # Filter by status if provided
@@ -192,9 +190,7 @@ class FilesystemRecordingStorage(RecordingStorage):
 
     # Helper methods
 
-    async def _write_metadata(
-        self, recording_dir: Path, recording: StorageRecording
-    ) -> None:
+    async def _write_metadata(self, recording_dir: Path, recording: StorageRecording) -> None:
         """Write recording metadata to JSON file atomically.
 
         Uses write-to-temp-then-rename pattern for crash safety.

@@ -134,9 +134,7 @@ def mock_transcriber():
     ):
         return mock_result
 
-    with patch.object(
-        RecordingService, "_run_transcription_subprocess", mock_run_subprocess
-    ):
+    with patch.object(RecordingService, "_run_transcription_subprocess", mock_run_subprocess):
         yield mock_result
 
 
@@ -185,9 +183,7 @@ class TestStartRecording:
         # model comes from daemon defaults
         assert data["settings"]["model"] == "large-v3"
 
-    def test_start_recording_without_settings_uses_defaults(
-        self, client, mock_recorder
-    ):
+    def test_start_recording_without_settings_uses_defaults(self, client, mock_recorder):
         """Test starting recording without settings uses daemon defaults."""
         response = client.post(
             "/api/v1/recordings",
@@ -315,26 +311,20 @@ class TestGetActiveRecording:
         assert data2["id"] == recording_id
 
         # Duration should have increased by approximately the wait time
-        assert (
-            duration2 > duration1
-        ), f"Duration should increase: {duration1} -> {duration2}"
+        assert duration2 > duration1, f"Duration should increase: {duration1} -> {duration2}"
         assert duration2 >= 0.14, f"Duration should be at least 0.14s, got {duration2}s"
 
         # Verify getting by ID also shows updated duration
         response3 = client.get(f"/api/v1/recordings/{recording_id}")
         assert response3.status_code == 200
         duration3 = response3.json()["duration"]
-        assert (
-            duration3 >= duration2
-        ), "GET /recordings/{id} should also show real-time duration"
+        assert duration3 >= duration2, "GET /recordings/{id} should also show real-time duration"
 
 
 class TestStopActiveRecording:
     """Tests for POST /api/v1/recordings/active/stop."""
 
-    def test_stop_active_recording_success(
-        self, client, mock_recorder, mock_transcriber, settings
-    ):
+    def test_stop_active_recording_success(self, client, mock_recorder, mock_transcriber, settings):
         """Test stopping the active recording."""
         # Start recording
         response = client.post("/api/v1/recordings", json={"title": "Test"})
@@ -364,18 +354,14 @@ class TestStopActiveRecording:
         assert error["detail"]["error"]["code"] == "NO_ACTIVE_RECORDING"
         assert error["detail"]["error"]["message"] == "No active recording"
 
-    def test_active_recording_lifecycle(
-        self, client, mock_recorder, mock_transcriber, settings
-    ):
+    def test_active_recording_lifecycle(self, client, mock_recorder, mock_transcriber, settings):
         """Test complete lifecycle: start -> check active -> stop via active endpoint."""
         # Initially no active recording
         response = client.get("/api/v1/recordings/active")
         assert response.status_code == 409, "Should be 409 when no recording active"
 
         # Start recording
-        start_response = client.post(
-            "/api/v1/recordings", json={"title": "Lifecycle Test"}
-        )
+        start_response = client.post("/api/v1/recordings", json={"title": "Lifecycle Test"})
         assert start_response.status_code == 201
         recording_id = start_response.json()["id"]
 
@@ -556,9 +542,7 @@ class TestListRecordings:
         response = client.get("/api/v1/recordings?status=processing")
         assert response.status_code == 200
         data = response.json()
-        assert (
-            len(data["recordings"]) == 1
-        ), "Should have exactly 1 processing recording"
+        assert len(data["recordings"]) == 1, "Should have exactly 1 processing recording"
         assert data["recordings"][0]["status"] == "processing"
         assert data["recordings"][0]["title"] == "Processing 1"
 
@@ -574,9 +558,7 @@ class TestListRecordings:
         response = client.get("/api/v1/recordings")
         assert response.status_code == 200
         data = response.json()
-        assert (
-            len(data["recordings"]) == 4
-        ), "Should have all 4 recordings without filter"
+        assert len(data["recordings"]) == 4, "Should have all 4 recordings without filter"
 
 
 class TestUpdateRecording:
@@ -706,12 +688,8 @@ class TestUpdateRecording:
         assert response.status_code == 200
         data = response.json()
         assert set(data["speakers"]) == {"Alice", "Bob"}
-        assert "SPEAKER_01" not in str(
-            data["segments"]
-        ), "Old speaker IDs should not remain"
-        assert "SPEAKER_02" not in str(
-            data["segments"]
-        ), "Old speaker IDs should not remain"
+        assert "SPEAKER_01" not in str(data["segments"]), "Old speaker IDs should not remain"
+        assert "SPEAKER_02" not in str(data["segments"]), "Old speaker IDs should not remain"
 
     def test_update_recording_not_complete(self, client, settings):
         """Test error when updating non-complete recording."""

@@ -101,13 +101,19 @@ class TestFindLoopbackDevicePreference:
     ):
         """On Linux, must select the monitor matching the default sink."""
         webcam = AudioSourceInfo(
-            device_index=17, name="alsa_output.webcam.monitor",
-            channels=2, sample_rate=44100, is_loopback=True,
+            device_index=17,
+            name="alsa_output.webcam.monitor",
+            channels=2,
+            sample_rate=44100,
+            is_loopback=True,
             pulse_source="alsa_output.webcam.monitor",
         )
         anker = AudioSourceInfo(
-            device_index=17, name="alsa_output.anker.monitor",
-            channels=2, sample_rate=44100, is_loopback=True,
+            device_index=17,
+            name="alsa_output.anker.monitor",
+            channels=2,
+            sample_rate=44100,
+            is_loopback=True,
             pulse_source="alsa_output.anker.monitor",
         )
         mock_list.return_value = [webcam, anker]
@@ -126,8 +132,11 @@ class TestFindLoopbackDevicePreference:
     ):
         """On Linux, must fall back to first .monitor if default sink not found."""
         webcam = AudioSourceInfo(
-            device_index=17, name="alsa_output.webcam.monitor",
-            channels=2, sample_rate=44100, is_loopback=True,
+            device_index=17,
+            name="alsa_output.webcam.monitor",
+            channels=2,
+            sample_rate=44100,
+            is_loopback=True,
             pulse_source="alsa_output.webcam.monitor",
         )
         mock_list.return_value = [webcam]
@@ -155,8 +164,11 @@ class TestPulseAudioMonitorDevices:
     ):
         """PulseAudio monitors must have pulse_source set (for PULSE_SOURCE env var)."""
         monitor = AudioSourceInfo(
-            device_index=17, name="alsa_output.device.monitor",
-            channels=2, sample_rate=44100, is_loopback=True,
+            device_index=17,
+            name="alsa_output.device.monitor",
+            channels=2,
+            sample_rate=44100,
+            is_loopback=True,
             pulse_source="alsa_output.device.monitor",
         )
         mock_list.return_value = [monitor]
@@ -178,13 +190,14 @@ class TestMacOSWindowsNosPulseSource:
     @patch("harkd.audio.sources.is_linux", return_value=False)
     @patch("harkd.audio.sources.is_macos", return_value=True)
     @patch("harkd.audio.sources.is_windows", return_value=False)
-    def test_macos_blackhole_no_pulse_source(
-        self, _win, _mac, _linux, mock_list
-    ):
+    def test_macos_blackhole_no_pulse_source(self, _win, _mac, _linux, mock_list):
         """macOS BlackHole devices must NOT have pulse_source set."""
         blackhole = AudioSourceInfo(
-            device_index=5, name="BlackHole 2ch",
-            channels=2, sample_rate=48000, is_loopback=True,
+            device_index=5,
+            name="BlackHole 2ch",
+            channels=2,
+            sample_rate=48000,
+            is_loopback=True,
             pulse_source=None,
         )
         mock_list.return_value = [blackhole]
@@ -197,13 +210,14 @@ class TestMacOSWindowsNosPulseSource:
     @patch("harkd.audio.sources.is_linux", return_value=False)
     @patch("harkd.audio.sources.is_macos", return_value=False)
     @patch("harkd.audio.sources.is_windows", return_value=True)
-    def test_windows_stereo_mix_no_pulse_source(
-        self, _win, _mac, _linux, mock_list
-    ):
+    def test_windows_stereo_mix_no_pulse_source(self, _win, _mac, _linux, mock_list):
         """Windows Stereo Mix devices must NOT have pulse_source set."""
         stereo_mix = AudioSourceInfo(
-            device_index=3, name="Stereo Mix (Realtek HD Audio)",
-            channels=2, sample_rate=44100, is_loopback=True,
+            device_index=3,
+            name="Stereo Mix (Realtek HD Audio)",
+            channels=2,
+            sample_rate=44100,
+            is_loopback=True,
             pulse_source=None,
         )
         mock_list.return_value = [stereo_mix]

@@ -78,9 +78,7 @@ class RecordingDefaults(BaseModel):
     """
 
     model: str = Field(default="large-v3", description="Whisper model name")
-    word_timestamps: bool = Field(
-        default=False, description="Include word-level timestamps"
-    )
+    word_timestamps: bool = Field(default=False, description="Include word-level timestamps")
     language: str = Field(default="auto", description="Language code or 'auto'")
     input_source: Literal["mic", "speaker", "both"] = Field(
         default="both", description="Audio input source"

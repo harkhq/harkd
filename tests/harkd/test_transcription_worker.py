@@ -18,9 +18,7 @@ def _skip_torch_patch(monkeypatch):
     mock_torch = MagicMock()
     mock_torch.cuda.is_available.return_value = False
     monkeypatch.setitem(sys.modules, "torch", mock_torch)
-    monkeypatch.setitem(
-        sys.modules, "torch.serialization", mock_torch.serialization
-    )
+    monkeypatch.setitem(sys.modules, "torch.serialization", mock_torch.serialization)
 
 
 def _make_mock_transcriber(text="Hello world", language="en", prob=0.95, dur=2.0):
@@ -46,8 +44,11 @@ def _make_mock_diarizer():
     """Helper: create a mock Diarizer + result."""
     mock_word = MagicMock(start=0.0, end=1.0, word="Hello", speaker="SPEAKER_01")
     mock_segment = MagicMock(
-        start=0.0, end=2.0, text="Hello world",
-        speaker="SPEAKER_01", words=[mock_word],
+        start=0.0,
+        end=2.0,
+        text="Hello world",
+        speaker="SPEAKER_01",
+        words=[mock_word],
     )
     mock_result = MagicMock()
     mock_result.segments = [mock_segment]
@@ -72,9 +73,7 @@ class TestTranscribeAudioWorkerTranscriberPath:
 
         mt = _make_mock_transcriber()
         with patch("harkd.audio.transcriber.Transcriber", return_value=mt):
-            result = transcribe_audio_worker(
-                "/tmp/audio.wav", "base", None, True, diarize=False
-            )
+            result = transcribe_audio_worker("/tmp/audio.wav", "base", None, True, diarize=False)
 
         assert result["text"] == "Hello world"
         assert result["language"] == "en"
@@ -98,12 +97,8 @@ class TestTranscribeAudioWorkerTranscriberPath:
         from harkd.services.transcription_worker import transcribe_audio_worker
 
         mt = _make_mock_transcriber()
-        with patch(
-            "harkd.audio.transcriber.Transcriber", return_value=mt
-        ) as mock_cls:
-            transcribe_audio_worker(
-                "/tmp/audio.wav", "large-v3", "de", True
-            )
+        with patch("harkd.audio.transcriber.Transcriber", return_value=mt) as mock_cls:
+            transcribe_audio_worker("/tmp/audio.wav", "large-v3", "de", True)
 
         mock_cls.assert_called_once_with(
             model_name="large-v3",
@@ -126,8 +121,12 @@ class TestTranscribeAudioWorkerDiarizerPath:
         md = _make_mock_diarizer()
         with patch("harkd.audio.diarizer.Diarizer", return_value=md):
             result = transcribe_audio_worker(
-                "/tmp/audio.wav", "large-v3", None, True,
-                diarize=True, hf_token="hf_test123",
+                "/tmp/audio.wav",
+                "large-v3",
+                None,
+                True,
+                diarize=True,
+                hf_token="hf_test123",
             )
 
         assert result["speakers"] == ["SPEAKER_01"]
@@ -146,12 +145,14 @@ class TestTranscribeAudioWorkerDiarizerPath:
         from harkd.services.transcription_worker import transcribe_audio_worker
 
         md = _make_mock_diarizer()
-        with patch(
-            "harkd.audio.diarizer.Diarizer", return_value=md
-        ) as mock_cls:
+        with patch("harkd.audio.diarizer.Diarizer", return_value=md) as mock_cls:
             transcribe_audio_worker(
-                "/tmp/audio.wav", "large-v3", "fr", True,
-                diarize=True, hf_token="hf_mytoken",
+                "/tmp/audio.wav",
+                "large-v3",
+                "fr",
+                True,
+                diarize=True,
+                hf_token="hf_mytoken",
             )
 
         mock_cls.assert_called_once_with(
@@ -169,12 +170,14 @@ class TestTranscribeAudioWorkerDiarizerPath:
         from harkd.services.transcription_worker import transcribe_audio_worker
 
         mt = _make_mock_transcriber(text="Fallback")
-        with patch(
-            "harkd.audio.transcriber.Transcriber", return_value=mt
-        ) as mock_cls:
+        with patch("harkd.audio.transcriber.Transcriber", return_value=mt) as mock_cls:
             result = transcribe_audio_worker(
-                "/tmp/audio.wav", "base", None, False,
-                diarize=True, hf_token=None,
+                "/tmp/audio.wav",
+                "base",
+                None,
+                False,
+                diarize=True,
+                hf_token=None,
             )
 
         # Transcriber was used, not Diarizer
@@ -189,9 +192,18 @@ class TestMainBlockCLI:
     def test_wrong_arg_count_exits_with_error(self):
         """Test that providing wrong number of args exits with code 1."""
         proc = subprocess.run(
-            [sys.executable, "-m", "harkd.services.transcription_worker",
-             "path", "model", "None", "true"],  # 4 args, needs 6
-            capture_output=True, text=True, timeout=10,
+            [
+                sys.executable,
+                "-m",
+                "harkd.services.transcription_worker",
+                "path",
+                "model",
+                "None",
+                "true",
+            ],  # 4 args, needs 6
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         assert proc.returncode == 1
         assert "Usage:" in proc.stdout or "Usage:" in proc.stderr
@@ -200,9 +212,20 @@ class TestMainBlockCLI:
         """Test that 6 args reaches the worker function (will fail on actual
         transcription since no audio file, but proves arg parsing works)."""
         proc = subprocess.run(
-            [sys.executable, "-m", "harkd.services.transcription_worker",
-             "/nonexistent/audio.wav", "base", "None", "false", "false", "None"],
-            capture_output=True, text=True, timeout=30,
+            [
+                sys.executable,
+                "-m",
+                "harkd.services.transcription_worker",
+                "/nonexistent/audio.wav",
+                "base",
+                "None",
+                "false",
+                "false",
+                "None",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         # The process should fail because the audio file doesn't exist or
         # because Transcriber can't load, but it should NOT fail on arg parsing

@@ -13,9 +13,7 @@ class TestCreateChatModel:
 
     def test_openai_provider(self):
         """Test creating OpenAI model."""
-        config = LLMSettings(
-            provider="openai", model="gpt-4o-mini", api_key="sk-test"
-        )
+        config = LLMSettings(provider="openai", model="gpt-4o-mini", api_key="sk-test")
 
         mock_cls = MagicMock()
         mock_module = MagicMock()
@@ -43,9 +41,7 @@ class TestCreateChatModel:
         mock_module = MagicMock()
         mock_module.ChatAnthropic = mock_cls
 
-        with patch.dict(
-            "sys.modules", {"langchain_anthropic": mock_module}
-        ):
+        with patch.dict("sys.modules", {"langchain_anthropic": mock_module}):
             create_chat_model(config)
 
         mock_cls.assert_called_once_with(
@@ -57,17 +53,13 @@ class TestCreateChatModel:
 
     def test_google_provider(self):
         """Test creating Google Generative AI model."""
-        config = LLMSettings(
-            provider="google", model="gemini-pro", api_key="google-test"
-        )
+        config = LLMSettings(provider="google", model="gemini-pro", api_key="google-test")
 
         mock_cls = MagicMock()
         mock_module = MagicMock()
         mock_module.ChatGoogleGenerativeAI = mock_cls
 
-        with patch.dict(
-            "sys.modules", {"langchain_google_genai": mock_module}
-        ):
+        with patch.dict("sys.modules", {"langchain_google_genai": mock_module}):
             create_chat_model(config)
 
         mock_cls.assert_called_once_with(
@@ -123,21 +115,15 @@ class TestCreateChatModel:
         # Force an unknown provider by modifying the object
         object.__setattr__(config, "provider", "unknown_provider")
 
-        with pytest.raises(
-            ValueError, match="Unknown LLM provider: unknown_provider"
-        ):
+        with pytest.raises(ValueError, match="Unknown LLM provider: unknown_provider"):
             create_chat_model(config)
 
     def test_missing_provider_package_raises_import_error(self):
         """Test ImportError when provider package is not installed."""
-        config = LLMSettings(
-            provider="openai", model="gpt-4o", api_key="sk-test"
-        )
+        config = LLMSettings(provider="openai", model="gpt-4o", api_key="sk-test")
 
         # Remove langchain_openai from sys.modules so the lazy import fails
-        with patch.dict(
-            "sys.modules", {"langchain_openai": None}
-        ):
+        with patch.dict("sys.modules", {"langchain_openai": None}):
             with pytest.raises(ImportError):
                 create_chat_model(config)
 

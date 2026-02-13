@@ -141,9 +141,7 @@ class Transcriber:
                         )
                         logger.info("WhisperX model loaded successfully")
                     except Exception as e:
-                        logger.error(
-                            f"Failed to load WhisperX model: {e}", exc_info=True
-                        )
+                        logger.error(f"Failed to load WhisperX model: {e}", exc_info=True)
                         raise
 
     def transcribe(
@@ -185,9 +183,7 @@ class Transcriber:
             logger.debug("Running transcription")
             if self._model is None:
                 raise RuntimeError("Model not loaded")
-            result = self._model.transcribe(
-                audio, batch_size=16, language=self.language
-            )
+            result = self._model.transcribe(audio, batch_size=16, language=self.language)
             detected_language = result.get("language", "unknown")
             logger.debug(f"Detected language: {detected_language}")
 

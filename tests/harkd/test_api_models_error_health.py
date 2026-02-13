@@ -83,7 +83,5 @@ class TestHealthResponse:
 
     def test_health_response_custom_status(self):
         """Test health response with custom status."""
-        response = HealthResponse(
-            status="degraded", version="0.1.0", uptime_seconds=100
-        )
+        response = HealthResponse(status="degraded", version="0.1.0", uptime_seconds=100)
         assert response.status == "degraded"

@@ -75,9 +75,7 @@ def test_start_recording(mock_soundfile, mock_stream, mock_find_mic, temp_output
 @patch("harkd.audio.recorder.find_microphone")
 @patch("harkd.audio.recorder.sd.InputStream")
 @patch("harkd.audio.recorder.sf.SoundFile")
-def test_start_recording_already_recording(
-    mock_soundfile, mock_stream, mock_find_mic, temp_output
-):
+def test_start_recording_already_recording(mock_soundfile, mock_stream, mock_find_mic, temp_output):
     """Test that starting when already recording raises error."""
     # Mock microphone device
     mock_find_mic.return_value = AudioSourceInfo(
@@ -131,9 +129,7 @@ def test_stop_when_not_recording(mock_soundfile, mock_stream, temp_output):
 @patch("harkd.audio.recorder.find_microphone")
 @patch("harkd.audio.recorder.sd.InputStream")
 @patch("harkd.audio.recorder.sf.SoundFile")
-def test_audio_callback_calculates_level(
-    mock_soundfile, mock_stream, mock_find_mic, temp_output
-):
+def test_audio_callback_calculates_level(mock_soundfile, mock_stream, mock_find_mic, temp_output):
     """Test that audio callback calculates and reports level."""
     # Mock microphone device
     mock_find_mic.return_value = AudioSourceInfo(
@@ -217,9 +213,7 @@ def test_recorder_channels_both(
 @patch("harkd.audio.recorder.find_microphone")
 @patch("harkd.audio.recorder.sd.InputStream")
 @patch("harkd.audio.recorder.sf.SoundFile")
-def test_recorder_creates_output_directory(
-    mock_soundfile, mock_stream, mock_find_mic, tmp_path
-):
+def test_recorder_creates_output_directory(mock_soundfile, mock_stream, mock_find_mic, tmp_path):
     """Test that recorder creates output directory if needed."""
     # Mock microphone device
     mock_find_mic.return_value = AudioSourceInfo(
@@ -272,9 +266,7 @@ class TestReportLevel:
         def failing_callback(level):
             raise ValueError("Callback error")
 
-        recorder = AudioRecorder(
-            output_path=temp_output, level_callback=failing_callback
-        )
+        recorder = AudioRecorder(output_path=temp_output, level_callback=failing_callback)
 
         # Should not raise — error is caught and logged
         audio_data = np.ones((1024, 1), dtype=np.float32) * 0.1
@@ -344,8 +336,11 @@ class TestCallbackNeverWritesSoundfileDirectly:
     ):
         """Mic callback must put data on queue, never call soundfile.write."""
         mock_find_mic.return_value = AudioSourceInfo(
-            device_index=0, name="Mic", channels=1,
-            sample_rate=16000, is_loopback=False,
+            device_index=0,
+            name="Mic",
+            channels=1,
+            sample_rate=16000,
+            is_loopback=False,
         )
         recorder = AudioRecorder(output_path=temp_output, input_source="mic")
         recorder.start()
@@ -365,8 +360,11 @@ class TestCallbackNeverWritesSoundfileDirectly:
     ):
         """Speaker callback must put data on queue, never call soundfile.write."""
         mock_find_loopback.return_value = AudioSourceInfo(
-            device_index=1, name="Monitor", channels=1,
-            sample_rate=48000, is_loopback=True,
+            device_index=1,
+            name="Monitor",
+            channels=1,
+            sample_rate=48000,
+            is_loopback=True,
         )
         recorder = AudioRecorder(output_path=temp_output, input_source="speaker")
         recorder.start()
@@ -383,17 +381,27 @@ class TestCallbackNeverWritesSoundfileDirectly:
     @patch("harkd.audio.recorder.sd.InputStream")
     @patch("harkd.audio.recorder.sf.SoundFile")
     def test_dual_callbacks_enqueue_not_write(
-        self, mock_soundfile, mock_stream, mock_find_mic, mock_find_loopback,
+        self,
+        mock_soundfile,
+        mock_stream,
+        mock_find_mic,
+        mock_find_loopback,
         temp_output,
     ):
         """Both-mode callbacks must buffer data, never call soundfile.write."""
         mock_find_mic.return_value = AudioSourceInfo(
-            device_index=0, name="Mic", channels=1,
-            sample_rate=16000, is_loopback=False,
+            device_index=0,
+            name="Mic",
+            channels=1,
+            sample_rate=16000,
+            is_loopback=False,
         )
         mock_find_loopback.return_value = AudioSourceInfo(
-            device_index=1, name="Monitor", channels=1,
-            sample_rate=48000, is_loopback=True,
+            device_index=1,
+            name="Monitor",
+            channels=1,
+            sample_rate=48000,
+            is_loopback=True,
         )
         recorder = AudioRecorder(output_path=temp_output, input_source="both")
         recorder.start()
@@ -417,8 +425,11 @@ class TestWriterThreadDrainsQueue:
     ):
         """Writer thread must drain the queue and call soundfile.write."""
         mock_find_mic.return_value = AudioSourceInfo(
-            device_index=0, name="Mic", channels=1,
-            sample_rate=16000, is_loopback=False,
+            device_index=0,
+            name="Mic",
+            channels=1,
+            sample_rate=16000,
+            is_loopback=False,
         )
         recorder = AudioRecorder(output_path=temp_output, input_source="mic")
         recorder.start()
@@ -450,8 +461,11 @@ class TestPulseSourceEnvVar:
         """_set_pulse_source must set PULSE_SOURCE when pulse_source is provided."""
         recorder = AudioRecorder(output_path=temp_output)
         source = AudioSourceInfo(
-            device_index=17, name="monitor.source", channels=2,
-            sample_rate=44100, is_loopback=True,
+            device_index=17,
+            name="monitor.source",
+            channels=2,
+            sample_rate=44100,
+            is_loopback=True,
             pulse_source="alsa_output.some_device.monitor",
         )
 
@@ -469,8 +483,11 @@ class TestPulseSourceEnvVar:
         """_set_pulse_source must be a no-op when pulse_source is None."""
         recorder = AudioRecorder(output_path=temp_output)
         source = AudioSourceInfo(
-            device_index=5, name="BlackHole 2ch", channels=2,
-            sample_rate=48000, is_loopback=True,
+            device_index=5,
+            name="BlackHole 2ch",
+            channels=2,
+            sample_rate=48000,
+            is_loopback=True,
             pulse_source=None,
         )
 
@@ -483,8 +500,11 @@ class TestPulseSourceEnvVar:
         """_restore_pulse_source must remove PULSE_SOURCE if it wasn't set before."""
         recorder = AudioRecorder(output_path=temp_output)
         source = AudioSourceInfo(
-            device_index=17, name="monitor", channels=2,
-            sample_rate=44100, is_loopback=True,
+            device_index=17,
+            name="monitor",
+            channels=2,
+            sample_rate=44100,
+            is_loopback=True,
             pulse_source="some.monitor",
         )
 
@@ -504,8 +524,11 @@ class TestPulseSourceEnvVar:
         """_restore_pulse_source must revert to the original PULSE_SOURCE value."""
         recorder = AudioRecorder(output_path=temp_output)
         source = AudioSourceInfo(
-            device_index=17, name="monitor", channels=2,
-            sample_rate=44100, is_loopback=True,
+            device_index=17,
+            name="monitor",
+            channels=2,
+            sample_rate=44100,
+            is_loopback=True,
             pulse_source="new.monitor",
         )
 
@@ -538,8 +561,11 @@ class TestPulseSourceEnvVar:
 
         mock_stream.side_effect = capture_pulse_source
         mock_find_loopback.return_value = AudioSourceInfo(
-            device_index=17, name="monitor", channels=2,
-            sample_rate=44100, is_loopback=True,
+            device_index=17,
+            name="monitor",
+            channels=2,
+            sample_rate=44100,
+            is_loopback=True,
             pulse_source="alsa_output.device.monitor",
         )
 
@@ -573,13 +599,14 @@ class TestSpeakerNativeSampleRate:
     ):
         """Speaker-only mode must open stream and soundfile at device native rate."""
         mock_find_loopback.return_value = AudioSourceInfo(
-            device_index=1, name="Monitor", channels=1,
-            sample_rate=48000, is_loopback=True,
+            device_index=1,
+            name="Monitor",
+            channels=1,
+            sample_rate=48000,
+            is_loopback=True,
         )
 
-        recorder = AudioRecorder(
-            output_path=temp_output, input_source="speaker", sample_rate=16000
-        )
+        recorder = AudioRecorder(output_path=temp_output, input_source="speaker", sample_rate=16000)
         recorder.start()
 
         # Stream must be opened at 48kHz (native), not 16kHz (target)
@@ -600,13 +627,14 @@ class TestSpeakerNativeSampleRate:
     ):
         """When device native rate matches target, use the target rate."""
         mock_find_loopback.return_value = AudioSourceInfo(
-            device_index=1, name="Monitor", channels=1,
-            sample_rate=16000, is_loopback=True,
+            device_index=1,
+            name="Monitor",
+            channels=1,
+            sample_rate=16000,
+            is_loopback=True,
         )
 
-        recorder = AudioRecorder(
-            output_path=temp_output, input_source="speaker", sample_rate=16000
-        )
+        recorder = AudioRecorder(output_path=temp_output, input_source="speaker", sample_rate=16000)
         recorder.start()
 
         stream_kwargs = mock_stream.call_args[1]

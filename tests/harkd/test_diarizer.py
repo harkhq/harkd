@@ -62,9 +62,7 @@ def test_diarizer_requires_hf_token(temp_audio):
 
 def test_diarizer_lazy_loads_model(temp_audio):
     """Test that model is lazy-loaded on first transcribe."""
-    with patch.dict(
-        "sys.modules", {"whisperx": MagicMock(), "whisperx.diarize": MagicMock()}
-    ):
+    with patch.dict("sys.modules", {"whisperx": MagicMock(), "whisperx.diarize": MagicMock()}):
         wx: Any = sys.modules["whisperx"]
         wx_diarize: Any = sys.modules["whisperx.diarize"]
 
@@ -109,9 +107,7 @@ def test_diarizer_lazy_loads_model(temp_audio):
 
 def test_diarizer_transcribe_basic(temp_audio):
     """Test basic diarization."""
-    with patch.dict(
-        "sys.modules", {"whisperx": MagicMock(), "whisperx.diarize": MagicMock()}
-    ):
+    with patch.dict("sys.modules", {"whisperx": MagicMock(), "whisperx.diarize": MagicMock()}):
         wx: Any = sys.modules["whisperx"]
         wx_diarize: Any = sys.modules["whisperx.diarize"]
 
@@ -206,9 +202,7 @@ def test_diarizer_transcribe_basic(temp_audio):
 
 def test_diarizer_with_word_timestamps(temp_audio):
     """Test diarization with word-level timestamps."""
-    with patch.dict(
-        "sys.modules", {"whisperx": MagicMock(), "whisperx.diarize": MagicMock()}
-    ):
+    with patch.dict("sys.modules", {"whisperx": MagicMock(), "whisperx.diarize": MagicMock()}):
         wx: Any = sys.modules["whisperx"]
         wx_diarize: Any = sys.modules["whisperx.diarize"]
 
@@ -354,9 +348,7 @@ def test_diarizer_device_auto_detection(temp_audio):
 
 def test_diarizer_compute_type_auto(temp_audio):
     """Test auto compute type selection."""
-    with patch.dict(
-        "sys.modules", {"whisperx": MagicMock(), "whisperx.diarize": MagicMock()}
-    ):
+    with patch.dict("sys.modules", {"whisperx": MagicMock(), "whisperx.diarize": MagicMock()}):
         wx: Any = sys.modules["whisperx"]
         wx_diarize: Any = sys.modules["whisperx.diarize"]
 

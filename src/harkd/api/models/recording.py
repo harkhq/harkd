@@ -85,9 +85,7 @@ class RecordingSettings(BaseModel):
     diarization: bool = Field(default=True, description="Enable speaker diarization")
     noise_reduction: bool = Field(default=True, description="Enable noise reduction")
     normalization: bool = Field(default=True, description="Enable audio normalization")
-    word_timestamps: bool = Field(
-        default=False, description="Include word-level timestamps"
-    )
+    word_timestamps: bool = Field(default=False, description="Include word-level timestamps")
 
     @field_validator("model")
     @classmethod
@@ -114,17 +112,13 @@ class RecordingOverrides(BaseModel):
     diarization: bool | None = Field(None, description="Enable speaker diarization")
     noise_reduction: bool | None = Field(None, description="Enable noise reduction")
     normalization: bool | None = Field(None, description="Enable audio normalization")
-    word_timestamps: bool | None = Field(
-        None, description="Include word-level timestamps"
-    )
+    word_timestamps: bool | None = Field(None, description="Include word-level timestamps")
 
 
 class RecordingCreate(BaseModel):
     """Request to create/start a new recording."""
 
-    title: str | None = Field(
-        None, max_length=200, description="Optional recording title"
-    )
+    title: str | None = Field(None, max_length=200, description="Optional recording title")
     settings: RecordingOverrides | None = Field(
         None, description="Per-recording setting overrides (None = use daemon defaults)"
     )
@@ -151,9 +145,7 @@ class RecordingResponse(BaseModel):
     duration: float = Field(..., ge=0)
 
     # While recording:
-    audio_level: float | None = Field(
-        None, ge=0, le=1, description="Current audio level (0-1)"
-    )
+    audio_level: float | None = Field(None, ge=0, le=1, description="Current audio level (0-1)")
 
     # While processing:
     processing_stage: ProcessingStage | None = None

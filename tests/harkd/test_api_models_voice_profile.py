@@ -88,9 +88,7 @@ class TestVoiceProfile:
         """Test total_seconds must be non-negative."""
         created_at = datetime.now()
         with pytest.raises(ValidationError):
-            VoiceProfile(
-                id="prof-001", name="Alice", created_at=created_at, total_seconds=-1.0
-            )
+            VoiceProfile(id="prof-001", name="Alice", created_at=created_at, total_seconds=-1.0)
 
     def test_profile_confidence_validation(self):
         """Test confidence must be 0-1."""
@@ -98,20 +96,14 @@ class TestVoiceProfile:
 
         # Negative confidence should fail
         with pytest.raises(ValidationError):
-            VoiceProfile(
-                id="prof-001", name="Alice", created_at=created_at, confidence=-0.1
-            )
+            VoiceProfile(id="prof-001", name="Alice", created_at=created_at, confidence=-0.1)
 
         # Confidence > 1 should fail
         with pytest.raises(ValidationError):
-            VoiceProfile(
-                id="prof-001", name="Alice", created_at=created_at, confidence=1.1
-            )
+            VoiceProfile(id="prof-001", name="Alice", created_at=created_at, confidence=1.1)
 
         # Valid confidence should pass
-        profile = VoiceProfile(
-            id="prof-001", name="Alice", created_at=created_at, confidence=0.85
-        )
+        profile = VoiceProfile(id="prof-001", name="Alice", created_at=created_at, confidence=0.85)
         assert profile.confidence == 0.85
 
 
@@ -122,12 +114,8 @@ class TestVoiceProfileDetail:
         """Test profile detail with embeddings."""
         created_at = datetime(2026, 1, 10, 14, 20, 0)
         embeddings = [
-            VoiceEmbedding(
-                recording_id="rec-1", speaker_id="SPEAKER_00", timestamp=created_at
-            ),
-            VoiceEmbedding(
-                recording_id="rec-2", speaker_id="SPEAKER_01", timestamp=created_at
-            ),
+            VoiceEmbedding(recording_id="rec-1", speaker_id="SPEAKER_00", timestamp=created_at),
+            VoiceEmbedding(recording_id="rec-2", speaker_id="SPEAKER_01", timestamp=created_at),
         ]
         detail = VoiceProfileDetail(
             id="prof-001",

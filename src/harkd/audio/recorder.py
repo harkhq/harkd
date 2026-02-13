@@ -62,9 +62,7 @@ class AudioRecorder:
             try:
                 output_path = Path(output_path)
             except (TypeError, ValueError) as e:
-                raise TypeError(
-                    f"output_path must be a Path or path string: {e}"
-                ) from e
+                raise TypeError(f"output_path must be a Path or path string: {e}") from e
 
         if input_source not in ("mic", "speaker", "both"):
             raise ValueError(
@@ -74,9 +72,7 @@ class AudioRecorder:
         # Validate sample rate
         valid_rates = (8000, 11025, 16000, 22050, 44100, 48000)
         if sample_rate not in valid_rates:
-            logger.warning(
-                f"Unusual sample rate: {sample_rate}. Common values: {valid_rates}"
-            )
+            logger.warning(f"Unusual sample rate: {sample_rate}. Common values: {valid_rates}")
 
         self.output_path = output_path
         self.input_source = input_source
@@ -146,9 +142,7 @@ class AudioRecorder:
                             if d["max_input_channels"] > 0
                         ]
                         if input_devices:
-                            available = "\n\nAvailable input devices:\n" + "\n".join(
-                                input_devices
-                            )
+                            available = "\n\nAvailable input devices:\n" + "\n".join(input_devices)
                         else:
                             available = "\n\nNo input devices detected."
                     except Exception:
@@ -184,8 +178,12 @@ class AudioRecorder:
                     if mic_source is None:
                         raise RuntimeError("mic_source is None for mic mode")
                     self._soundfile = sf.SoundFile(
-                        self.output_path, mode="w", samplerate=self.sample_rate,
-                        channels=channels, format="WAV", subtype="PCM_16",
+                        self.output_path,
+                        mode="w",
+                        samplerate=self.sample_rate,
+                        channels=channels,
+                        format="WAV",
+                        subtype="PCM_16",
                     )
                     self._start_writer_thread()
                     self._start_mic_only(mic_source)
@@ -199,8 +197,12 @@ class AudioRecorder:
                     if speaker_source is None:
                         raise RuntimeError("speaker_source is None for both mode")
                     self._soundfile = sf.SoundFile(
-                        self.output_path, mode="w", samplerate=self.sample_rate,
-                        channels=channels, format="WAV", subtype="PCM_16",
+                        self.output_path,
+                        mode="w",
+                        samplerate=self.sample_rate,
+                        channels=channels,
+                        format="WAV",
+                        subtype="PCM_16",
                     )
                     self._start_writer_thread()
                     self._start_both(mic_source, speaker_source)
@@ -273,15 +275,17 @@ class AudioRecorder:
 
         # Create soundfile at the stream's actual rate
         self._soundfile = sf.SoundFile(
-            self.output_path, mode="w", samplerate=stream_rate,
-            channels=1, format="WAV", subtype="PCM_16",
+            self.output_path,
+            mode="w",
+            samplerate=stream_rate,
+            channels=1,
+            format="WAV",
+            subtype="PCM_16",
         )
         self._start_writer_thread()
         self._speaker_stream.start()
 
-    def _start_both(
-        self, mic_source: AudioSourceInfo, speaker_source: AudioSourceInfo
-    ) -> None:
+    def _start_both(self, mic_source: AudioSourceInfo, speaker_source: AudioSourceInfo) -> None:
         """Start simultaneous mic + speaker recording."""
         self._mic_buffer = []
         self._speaker_buffer = []
@@ -520,13 +524,8 @@ class AudioRecorder:
                     speaker_chunk = self._speaker_buffer.pop(0)
 
                     # Resample speaker if at different rate
-                    if (
-                        self._speaker_native_rate
-                        and self._speaker_native_rate != self.sample_rate
-                    ):
-                        speaker_chunk = self._resample(
-                            speaker_chunk, self._speaker_native_rate
-                        )
+                    if self._speaker_native_rate and self._speaker_native_rate != self.sample_rate:
+                        speaker_chunk = self._resample(speaker_chunk, self._speaker_native_rate)
 
                     # Ensure same length (may differ after resampling)
                     min_len = min(len(mic_chunk), len(speaker_chunk))

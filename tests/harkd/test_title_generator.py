@@ -20,8 +20,7 @@ def test_generate_title_removes_trailing_punctuation():
 def test_generate_title_truncates_long_text():
     """Test that long text is truncated."""
     transcript = (
-        "This is a very long sentence that goes on and on"
-        " and should be truncated at some point."
+        "This is a very long sentence that goes on and on and should be truncated at some point."
     )
     title = generate_title(transcript, max_length=30)
     assert len(title) <= 33  # 30 + "..."

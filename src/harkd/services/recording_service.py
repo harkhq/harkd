@@ -79,9 +79,7 @@ class RecordingService:
         self._audio_level: float = 0.0
         self._last_audio_level_write: float = 0.0
 
-    async def start_recording(
-        self, create_request: RecordingCreate
-    ) -> RecordingResponse:
+    async def start_recording(self, create_request: RecordingCreate) -> RecordingResponse:
         """Start a new recording.
 
         Args:
@@ -97,9 +95,7 @@ class RecordingService:
         if self.recording_state.is_recording:
             active_id = self.recording_state.active_recording_id
             if active_id is None:
-                raise RuntimeError(
-                    "is_recording is True but active_recording_id is None"
-                )
+                raise RuntimeError("is_recording is True but active_recording_id is None")
             logger.warning(f"Cannot start recording: already recording {active_id}")
             raise RecordingInProgressError(active_id)
 
@@ -147,9 +143,7 @@ class RecordingService:
                 output_path=audio_path,
                 input_source=final_settings["input_source"],
                 sample_rate=16000,  # Whisper uses 16kHz
-                level_callback=lambda level: self._update_audio_level(
-                    recording_id, level
-                ),
+                level_callback=lambda level: self._update_audio_level(recording_id, level),
             )
 
             # Start recording
@@ -163,9 +157,7 @@ class RecordingService:
             if recorder is not None:
                 with contextlib.suppress(Exception):
                     recorder.stop()
-            logger.error(
-                f"Failed to start recording {recording_id}: {e}", exc_info=True
-            )
+            logger.error(f"Failed to start recording {recording_id}: {e}", exc_info=True)
             # Clean up metadata
             await self.storage.delete(recording_id)
             raise
@@ -253,9 +245,7 @@ class RecordingService:
         try:
             active_id, start_time = await self.recording_state.stop()
             if active_id != recording_id:
-                logger.warning(
-                    f"State mismatch: expected {recording_id}, got {active_id}"
-                )
+                logger.warning(f"State mismatch: expected {recording_id}, got {active_id}")
         except NoActiveRecordingError as e:
             logger.error(f"Failed to stop recording state: {e}")
             raise InvalidStateError(
@@ -529,10 +519,7 @@ class RecordingService:
         """
         try:
             storage_recording = await self.storage.get(recording_id)
-            if (
-                storage_recording
-                and storage_recording.status == RecordingStatus.RECORDING.value
-            ):
+            if storage_recording and storage_recording.status == RecordingStatus.RECORDING.value:
                 storage_recording.audio_level = level
                 await self.storage.update(storage_recording)
         except Exception as e:
@@ -577,9 +564,7 @@ class RecordingService:
             hf_token or "None",
         ]
 
-        logger.info(
-            f"[{recording_id}] Starting transcription subprocess: {' '.join(cmd)}"
-        )
+        logger.info(f"[{recording_id}] Starting transcription subprocess: {' '.join(cmd)}")
 
         def run_subprocess():
             return subprocess.run(
@@ -596,9 +581,7 @@ class RecordingService:
             logger.error(
                 f"[{recording_id}] Transcription subprocess timed out after {_SUBPROCESS_TIMEOUT}s"
             )
-            raise RuntimeError(
-                f"Transcription timed out after {_SUBPROCESS_TIMEOUT}s"
-            ) from e
+            raise RuntimeError(f"Transcription timed out after {_SUBPROCESS_TIMEOUT}s") from e
 
         stdout = proc.stdout
         stderr = proc.stderr
@@ -683,9 +666,7 @@ class RecordingService:
                 return
 
             # Audio file is stored alongside metadata: {base_path}/recordings/{id}/audio.wav
-            audio_path = (
-                self.storage.base_path / "recordings" / recording_id / "audio.wav"
-            )
+            audio_path = self.storage.base_path / "recordings" / recording_id / "audio.wav"
             if not await asyncio.to_thread(audio_path.exists):
                 raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
@@ -699,15 +680,11 @@ class RecordingService:
 
             # Check if diarization is enabled
             diarization_enabled = settings.get("diarization", False)
-            word_timestamps = (
-                settings.get("word_timestamps", False) or diarization_enabled
-            )
+            word_timestamps = settings.get("word_timestamps", False) or diarization_enabled
 
             # Prepare transcription parameters
             model_name = settings.get("model", "base")
-            language = (
-                settings.get("language") if settings.get("language") != "auto" else None
-            )
+            language = settings.get("language") if settings.get("language") != "auto" else None
 
             if diarization_enabled:
                 hf_token = self.config.hf_token
@@ -728,9 +705,7 @@ class RecordingService:
                 )
             else:
                 # Regular transcription
-                logger.info(
-                    f"[{recording_id}] Running transcription in separate subprocess..."
-                )
+                logger.info(f"[{recording_id}] Running transcription in separate subprocess...")
                 result_dict = await self._run_transcription_subprocess(
                     recording_id,
                     str(audio_path),
@@ -749,9 +724,7 @@ class RecordingService:
             # Generate title if not provided
             if storage_recording.title == "Untitled Recording":
                 storage_recording.title = generate_title(transcript)
-                logger.debug(
-                    f"[{recording_id}] Generated title: {storage_recording.title}"
-                )
+                logger.debug(f"[{recording_id}] Generated title: {storage_recording.title}")
 
             # Stage: Meeting minutes (if LLM enabled)
             if self.config.llm.enabled:
@@ -864,9 +837,7 @@ class RecordingService:
             duration=storage.duration,
             audio_level=storage.audio_level,
             processing_stage=(
-                ProcessingStage(storage.processing_stage)
-                if storage.processing_stage
-                else None
+                ProcessingStage(storage.processing_stage) if storage.processing_stage else None
             ),
             processing_progress=storage.processing_progress,
             input_source=storage.input_source,

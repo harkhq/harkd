@@ -52,18 +52,14 @@ class TestLLMClientInvoke:
         ):
             client = LLMClient(llm_config)
 
-        result = await client.invoke(
-            [{"role": "user", "content": "Hello"}]
-        )
+        result = await client.invoke([{"role": "user", "content": "Hello"}])
 
         assert result.content == "Test response"
         assert result.model == "gpt-4o-mini"
         mock_chat_model.ainvoke.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_invoke_with_system_message(
-        self, llm_config, mock_chat_model
-    ):
+    async def test_invoke_with_system_message(self, llm_config, mock_chat_model):
         """Test invoke with system and user messages."""
         with patch(
             "harkd.llm.client.create_chat_model",
@@ -71,19 +67,19 @@ class TestLLMClientInvoke:
         ):
             client = LLMClient(llm_config)
 
-        await client.invoke([
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "Hello"},
-        ])
+        await client.invoke(
+            [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"},
+            ]
+        )
 
         call_args = mock_chat_model.ainvoke.call_args
         messages = call_args[0][0]
         assert len(messages) == 2
 
     @pytest.mark.asyncio
-    async def test_invoke_extracts_token_usage(
-        self, llm_config, mock_chat_model
-    ):
+    async def test_invoke_extracts_token_usage(self, llm_config, mock_chat_model):
         """Test that token usage is extracted from response."""
         with patch(
             "harkd.llm.client.create_chat_model",
@@ -91,9 +87,7 @@ class TestLLMClientInvoke:
         ):
             client = LLMClient(llm_config)
 
-        result = await client.invoke(
-            [{"role": "user", "content": "Hello"}]
-        )
+        result = await client.invoke([{"role": "user", "content": "Hello"}])
 
         assert result.usage is not None
         assert result.usage.prompt_tokens == 10
@@ -105,9 +99,7 @@ class TestLLMClientInvokeWithTools:
     """Tests for LLMClient.invoke_with_tools()."""
 
     @pytest.mark.asyncio
-    async def test_invoke_with_tools_binds_tools(
-        self, llm_config, mock_chat_model
-    ):
+    async def test_invoke_with_tools_binds_tools(self, llm_config, mock_chat_model):
         """Test that tools are bound to the model."""
         # bind_tools returns a new mock that also supports ainvoke
         bound_mock = MagicMock()
@@ -136,24 +128,24 @@ class TestGenerateMeetingMinutes:
     """Tests for LLMClient.generate_meeting_minutes()."""
 
     @pytest.mark.asyncio
-    async def test_generate_meeting_minutes_success(
-        self, llm_config, mock_chat_model
-    ):
+    async def test_generate_meeting_minutes_success(self, llm_config, mock_chat_model):
         """Test successful meeting minutes generation."""
-        minutes_json = json.dumps({
-            "executive_summary": ["Key point 1", "Key point 2"],
-            "meeting_notes": [
-                {"topic": "Design", "content": "Discussed new design"},
-            ],
-            "tasks": [
-                {
-                    "task": "Update docs",
-                    "assignee": "SPEAKER_01",
-                    "due": None,
-                },
-            ],
-            "decisions": ["Use React for frontend"],
-        })
+        minutes_json = json.dumps(
+            {
+                "executive_summary": ["Key point 1", "Key point 2"],
+                "meeting_notes": [
+                    {"topic": "Design", "content": "Discussed new design"},
+                ],
+                "tasks": [
+                    {
+                        "task": "Update docs",
+                        "assignee": "SPEAKER_01",
+                        "due": None,
+                    },
+                ],
+                "decisions": ["Use React for frontend"],
+            }
+        )
 
         mock_result = MagicMock()
         mock_result.content = minutes_json
@@ -186,9 +178,7 @@ class TestGenerateMeetingMinutes:
         assert len(result.decisions) == 1
 
     @pytest.mark.asyncio
-    async def test_generate_meeting_minutes_malformed_json(
-        self, llm_config, mock_chat_model
-    ):
+    async def test_generate_meeting_minutes_malformed_json(self, llm_config, mock_chat_model):
         """Test graceful handling of malformed JSON from LLM."""
         mock_result = MagicMock()
         mock_result.content = "This is not valid JSON at all"
@@ -213,16 +203,16 @@ class TestGenerateMeetingMinutes:
         assert "could not be parsed" in result.executive_summary[0]
 
     @pytest.mark.asyncio
-    async def test_generate_meeting_minutes_json_in_code_block(
-        self, llm_config, mock_chat_model
-    ):
+    async def test_generate_meeting_minutes_json_in_code_block(self, llm_config, mock_chat_model):
         """Test parsing JSON wrapped in markdown code blocks."""
-        minutes_json = json.dumps({
-            "executive_summary": ["Summary"],
-            "meeting_notes": [],
-            "tasks": [],
-            "decisions": [],
-        })
+        minutes_json = json.dumps(
+            {
+                "executive_summary": ["Summary"],
+                "meeting_notes": [],
+                "tasks": [],
+                "decisions": [],
+            }
+        )
         wrapped = f"```json\n{minutes_json}\n```"
 
         mock_result = MagicMock()
@@ -250,12 +240,14 @@ class TestParseMeetingMinutes:
 
     def test_valid_json(self):
         """Test parsing valid JSON."""
-        content = json.dumps({
-            "executive_summary": ["Point 1"],
-            "meeting_notes": [{"topic": "A", "content": "B"}],
-            "tasks": [],
-            "decisions": ["Decision 1"],
-        })
+        content = json.dumps(
+            {
+                "executive_summary": ["Point 1"],
+                "meeting_notes": [{"topic": "A", "content": "B"}],
+                "tasks": [],
+                "decisions": ["Decision 1"],
+            }
+        )
 
         result = LLMClient._parse_meeting_minutes(content)
 
@@ -265,12 +257,14 @@ class TestParseMeetingMinutes:
 
     def test_json_in_code_block(self):
         """Test parsing JSON in markdown code block."""
-        inner = json.dumps({
-            "executive_summary": ["S"],
-            "meeting_notes": [],
-            "tasks": [],
-            "decisions": [],
-        })
+        inner = json.dumps(
+            {
+                "executive_summary": ["S"],
+                "meeting_notes": [],
+                "tasks": [],
+                "decisions": [],
+            }
+        )
         content = f"```json\n{inner}\n```"
 
         result = LLMClient._parse_meeting_minutes(content)
@@ -348,9 +342,7 @@ class TestLLMClientWithMiddleware:
         )
 
         mock_model = MagicMock()
-        mock_model.ainvoke = AsyncMock(
-            return_value=MagicMock(content="r", usage_metadata=None)
-        )
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(content="r", usage_metadata=None))
 
         with patch(
             "harkd.llm.client.create_chat_model",

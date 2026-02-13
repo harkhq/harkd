@@ -47,9 +47,7 @@ def config(tmp_path):
 @pytest.fixture
 def service(storage, config, recording_state):
     """Create recording service."""
-    return RecordingService(
-        storage=storage, config=config, recording_state=recording_state
-    )
+    return RecordingService(storage=storage, config=config, recording_state=recording_state)
 
 
 @pytest.fixture
@@ -83,14 +81,18 @@ def mock_transcriber():
     }
 
     async def mock_run_subprocess(
-        self, recording_id, audio_path, model_name, language, word_timestamps,
-        diarize=False, hf_token=None,
+        self,
+        recording_id,
+        audio_path,
+        model_name,
+        language,
+        word_timestamps,
+        diarize=False,
+        hf_token=None,
     ):
         return mock_result
 
-    with patch.object(
-        RecordingService, "_run_transcription_subprocess", mock_run_subprocess
-    ):
+    with patch.object(RecordingService, "_run_transcription_subprocess", mock_run_subprocess):
         yield mock_result
 
 
@@ -199,9 +201,7 @@ class TestStartRecording:
     @pytest.mark.asyncio
     async def test_start_recording_partial_overrides(self, service, mock_recorder):
         """Test per-recording overrides merge with daemon defaults."""
-        request = RecordingCreate(
-            settings=RecordingOverrides(language="en", diarization=False)
-        )
+        request = RecordingCreate(settings=RecordingOverrides(language="en", diarization=False))
 
         result = await service.start_recording(request)
 
@@ -264,9 +264,7 @@ class TestStopRecording:
     """Tests for stop_recording."""
 
     @pytest.mark.asyncio
-    async def test_stop_recording_success(
-        self, service, mock_recorder, mock_transcriber
-    ):
+    async def test_stop_recording_success(self, service, mock_recorder, mock_transcriber):
         """Test successful recording stop."""
         # Start recording
         start_result = await service.start_recording(RecordingCreate())
@@ -310,18 +308,14 @@ class TestStopRecording:
             await service.stop_recording("test-123")
 
     @pytest.mark.asyncio
-    async def test_stop_recording_starts_processing(
-        self, service, mock_recorder, mock_transcriber
-    ):
+    async def test_stop_recording_starts_processing(self, service, mock_recorder, mock_transcriber):
         """Test that processing task is started."""
         # Start recording
         start_result = await service.start_recording(RecordingCreate())
         recording_id = start_result.id
 
         # Create audio file (required for processing)
-        audio_path = (
-            service.storage.base_path / "recordings" / recording_id / "audio.wav"
-        )
+        audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
         audio_path.touch()
 
         # Stop recording
@@ -355,9 +349,7 @@ class TestGetActiveRecording:
             await service.get_active_recording()
 
     @pytest.mark.asyncio
-    async def test_get_active_recording_real_time_duration(
-        self, service, mock_recorder
-    ):
+    async def test_get_active_recording_real_time_duration(self, service, mock_recorder):
         """Test that duration is updated in real-time."""
         # Start recording
         await service.start_recording(RecordingCreate())
@@ -376,9 +368,7 @@ class TestStopActiveRecording:
     """Tests for stop_active_recording."""
 
     @pytest.mark.asyncio
-    async def test_stop_active_recording_success(
-        self, service, mock_recorder, mock_transcriber
-    ):
+    async def test_stop_active_recording_success(self, service, mock_recorder, mock_transcriber):
         """Test stopping the active recording."""
         # Start recording
         start_result = await service.start_recording(RecordingCreate())
@@ -415,9 +405,7 @@ class TestStopActiveRecording:
         recording_id = start_result.id
 
         # Create audio file
-        audio_path = (
-            service.storage.base_path / "recordings" / recording_id / "audio.wav"
-        )
+        audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
         audio_path.touch()
 
         # Stop using active endpoint
@@ -450,18 +438,14 @@ class TestCancelRecording:
         assert not service.recording_state.is_recording
 
     @pytest.mark.asyncio
-    async def test_cancel_processing_recording(
-        self, service, mock_recorder, mock_transcriber
-    ):
+    async def test_cancel_processing_recording(self, service, mock_recorder, mock_transcriber):
         """Test canceling a processing recording."""
         # Start and stop recording
         result = await service.start_recording(RecordingCreate())
         recording_id = result.id
 
         # Create audio file
-        audio_path = (
-            service.storage.base_path / "recordings" / recording_id / "audio.wav"
-        )
+        audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
         audio_path.touch()
 
         await service.stop_recording(recording_id)
@@ -721,18 +705,14 @@ class TestProcessing:
     """Tests for background processing."""
 
     @pytest.mark.asyncio
-    async def test_processing_workflow(
-        self, service, mock_recorder, mock_transcriber, tmp_path
-    ):
+    async def test_processing_workflow(self, service, mock_recorder, mock_transcriber, tmp_path):
         """Test complete processing workflow."""
         # Start recording
         result = await service.start_recording(RecordingCreate(title="Test"))
         recording_id = result.id
 
         # Create audio file
-        audio_path = (
-            service.storage.base_path / "recordings" / recording_id / "audio.wav"
-        )
+        audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
         audio_path.touch()
 
         # Stop recording
@@ -751,18 +731,14 @@ class TestProcessing:
         assert len(final.segments) == 1
 
     @pytest.mark.asyncio
-    async def test_processing_generates_title(
-        self, service, mock_recorder, mock_transcriber
-    ):
+    async def test_processing_generates_title(self, service, mock_recorder, mock_transcriber):
         """Test title generation for untitled recordings."""
         # Start recording without title
         result = await service.start_recording(RecordingCreate())
         recording_id = result.id
 
         # Create audio file
-        audio_path = (
-            service.storage.base_path / "recordings" / recording_id / "audio.wav"
-        )
+        audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
         audio_path.touch()
 
         # Stop and process
@@ -779,18 +755,14 @@ class TestProcessing:
         assert len(final.title) > 0
 
     @pytest.mark.asyncio
-    async def test_processing_error_sets_error_status(
-        self, service, mock_recorder, storage
-    ):
+    async def test_processing_error_sets_error_status(self, service, mock_recorder, storage):
         """Test that processing failure sets error status and clears processing fields."""
         # Start recording
         result = await service.start_recording(RecordingCreate(title="Test"))
         recording_id = result.id
 
         # Create audio file
-        audio_path = (
-            service.storage.base_path / "recordings" / recording_id / "audio.wav"
-        )
+        audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
         audio_path.touch()
 
         # Make transcription subprocess raise an error
@@ -822,8 +794,8 @@ class TestConvertTranscriptionResult:
     def test_empty_segments(self):
         """Test conversion with empty segments."""
         result_dict = {"segments": [], "language": "en", "language_probability": 0.9}
-        segments, language, confidence, speakers = (
-            RecordingService._convert_transcription_result(result_dict)
+        segments, language, confidence, speakers = RecordingService._convert_transcription_result(
+            result_dict
         )
 
         assert segments == []
@@ -850,8 +822,8 @@ class TestConvertTranscriptionResult:
             "language_probability": 0.95,
             "speakers": ["SPEAKER_01"],
         }
-        segments, language, confidence, speakers = (
-            RecordingService._convert_transcription_result(result_dict)
+        segments, language, confidence, speakers = RecordingService._convert_transcription_result(
+            result_dict
         )
 
         assert len(segments) == 1
@@ -869,8 +841,8 @@ class TestConvertTranscriptionResult:
                 {"start": 0.0, "end": 2.0, "text": "Hello"},
             ],
         }
-        segments, language, confidence, speakers = (
-            RecordingService._convert_transcription_result(result_dict)
+        segments, language, confidence, speakers = RecordingService._convert_transcription_result(
+            result_dict
         )
 
         assert len(segments) == 1
@@ -885,9 +857,7 @@ class TestAudioLevelCallback:
     """Tests for audio level callback."""
 
     @pytest.mark.asyncio
-    async def test_audio_level_callback_from_thread(
-        self, service, mock_recorder, storage
-    ):
+    async def test_audio_level_callback_from_thread(self, service, mock_recorder, storage):
         """Test that audio level callback works when called from a different thread.
 
         This tests the cross-thread async call handling that occurs when
@@ -926,9 +896,7 @@ class TestDiarizationSubprocess:
     """Tests for diarization parameter passing to subprocess."""
 
     @pytest.mark.asyncio
-    async def test_diarization_params_passed_to_subprocess(
-        self, service, mock_recorder, tmp_path
-    ):
+    async def test_diarization_params_passed_to_subprocess(self, service, mock_recorder, tmp_path):
         """Test that diarize and hf_token are passed to subprocess correctly."""
         # Set up config with diarization and hf_token
         service.config = HarkdSettings(
@@ -963,21 +931,25 @@ class TestDiarizationSubprocess:
 
         captured_kwargs = {}
 
-        async def mock_subprocess(self, recording_id, audio_path, model_name,
-                                  language, word_timestamps, diarize=False, hf_token=None):
+        async def mock_subprocess(
+            self,
+            recording_id,
+            audio_path,
+            model_name,
+            language,
+            word_timestamps,
+            diarize=False,
+            hf_token=None,
+        ):
             captured_kwargs["diarize"] = diarize
             captured_kwargs["hf_token"] = hf_token
             return diarized_result
 
-        with patch.object(
-            RecordingService, "_run_transcription_subprocess", mock_subprocess
-        ):
+        with patch.object(RecordingService, "_run_transcription_subprocess", mock_subprocess):
             result = await service.start_recording(RecordingCreate())
             recording_id = result.id
 
-            audio_path = (
-                service.storage.base_path / "recordings" / recording_id / "audio.wav"
-            )
+            audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
             audio_path.touch()
 
             await service.stop_recording(recording_id)
@@ -1007,9 +979,7 @@ class TestMeetingMinutesIntegration:
             recording=RecordingDefaults(diarization=False),
             llm=LLMSettings(enabled=True, provider="openai", api_key="sk-test"),
         )
-        svc = RecordingService(
-            storage=storage, config=config, recording_state=recording_state
-        )
+        svc = RecordingService(storage=storage, config=config, recording_state=recording_state)
 
         mock_transcription = {
             "text": "We decided to use React",
@@ -1034,9 +1004,7 @@ class TestMeetingMinutesIntegration:
         )
 
         with (
-            patch.object(
-                RecordingService, "_run_transcription_subprocess", mock_subprocess
-            ),
+            patch.object(RecordingService, "_run_transcription_subprocess", mock_subprocess),
             patch("harkd.llm.client.LLMClient") as mock_llm_cls,
         ):
             mock_llm = MagicMock()
@@ -1072,9 +1040,7 @@ class TestMeetingMinutesIntegration:
             recording=RecordingDefaults(diarization=False),
             llm=LLMSettings(enabled=True, provider="openai", api_key="sk-test"),
         )
-        svc = RecordingService(
-            storage=storage, config=config, recording_state=recording_state
-        )
+        svc = RecordingService(storage=storage, config=config, recording_state=recording_state)
 
         mock_transcription = {
             "text": "Hello world",
@@ -1090,9 +1056,7 @@ class TestMeetingMinutesIntegration:
             return mock_transcription
 
         with (
-            patch.object(
-                RecordingService, "_run_transcription_subprocess", mock_subprocess
-            ),
+            patch.object(RecordingService, "_run_transcription_subprocess", mock_subprocess),
             patch("harkd.llm.client.LLMClient") as mock_llm_cls,
         ):
             mock_llm = MagicMock()
@@ -1132,9 +1096,7 @@ class TestMeetingMinutesIntegration:
         result = await service.start_recording(RecordingCreate())
         recording_id = result.id
 
-        audio_path = (
-            service.storage.base_path / "recordings" / recording_id / "audio.wav"
-        )
+        audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
         audio_path.touch()
 
         await service.stop_recording(recording_id)

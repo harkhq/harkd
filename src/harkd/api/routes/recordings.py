@@ -85,17 +85,13 @@ async def start_recording(
 )
 async def list_recordings(
     service: ServiceDep,
-    limit: Annotated[
-        int, Query(ge=1, le=100, description="Maximum number of results")
-    ] = 50,
+    limit: Annotated[int, Query(ge=1, le=100, description="Maximum number of results")] = 50,
     offset: Annotated[int, Query(ge=0, description="Result offset for pagination")] = 0,
     status_filter: Annotated[
         RecordingStatus | None,
         Query(alias="status", description="Filter by status"),
     ] = None,
-    search: Annotated[
-        str | None, Query(description="Search in title/transcript")
-    ] = None,
+    search: Annotated[str | None, Query(description="Search in title/transcript")] = None,
 ) -> RecordingListResponse:
     """List recordings with filtering and pagination.
 
@@ -120,9 +116,7 @@ async def list_recordings(
         search=search,
     )
 
-    logger.debug(
-        f"Returning {len(result.recordings)} recordings (total={result.total})"
-    )
+    logger.debug(f"Returning {len(result.recordings)} recordings (total={result.total})")
     return result
 
 
@@ -167,8 +161,7 @@ async def get_active_recording(
     response_model=RecordingResponse,
     summary="Stop active recording",
     description=(
-        "Stop the currently active recording and begin processing."
-        " No recording ID required."
+        "Stop the currently active recording and begin processing. No recording ID required."
     ),
 )
 async def stop_active_recording(
