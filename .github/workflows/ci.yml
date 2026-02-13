@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Ruff check
+        run: uv run ruff check src/ tests/
+
+      - name: Ruff format
+        run: uv run ruff format --check src/ tests/
+
+      - name: Pyrefly type check
+        run: uv run pyrefly check src/harkd/
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: Test all Python versions (primary platform)
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          # macOS: Test latest Python only (verify platform-specific code)
+          - os: macos-latest
+            python-version: "3.13"
+          # Windows: Test latest Python only (verify platform-specific code)
+          - os: windows-latest
+            python-version: "3.13"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2 libpulse0
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install portaudio
+
+      # Windows: No system deps needed (PyAudioWPatch bundles PortAudio)
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Run tests (excluding contract tests)
+        run: uv run pytest tests/ -x --tb=short -m "not contract_test"
+
+  contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libportaudio2 libpulse0 ffmpeg
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install all dependencies (including optional)
+        run: uv sync --extra test --extra diarization
+        env:
+          # Prevent any model downloads during install
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+
+      - name: Run contract tests
+        run: uv run pytest tests/test_contracts.py -v --tb=short
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"

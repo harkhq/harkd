@@ -1,0 +1,200 @@
+"""API models for recordings."""
+
+from datetime import datetime
+from enum import Enum
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+__all__ = [
+    "RecordingStatus",
+    "ProcessingStage",
+    "WordModel",
+    "SegmentModel",
+    "RecordingSettings",
+    "RecordingOverrides",
+    "RecordingCreate",
+    "RecordingUpdate",
+    "RecordingResponse",
+    "RecordingListItem",
+    "RecordingListResponse",
+]
+
+
+class RecordingStatus(str, Enum):
+    """Recording status enum."""
+
+    RECORDING = "recording"
+    PROCESSING = "processing"
+    COMPLETE = "complete"
+    ERROR = "error"
+
+
+class ProcessingStage(str, Enum):
+    """Processing stage enum."""
+
+    PREPROCESSING = "preprocessing"
+    TRANSCRIPTION = "transcription"
+    DIARIZATION = "diarization"
+    MEETING_MINUTES = "meeting_minutes"
+
+
+class WordModel(BaseModel):
+    """Word segment with timing."""
+
+    start: float = Field(..., ge=0, description="Start time in seconds")
+    end: float = Field(..., ge=0, description="End time in seconds")
+    word: str = Field(..., description="Word text")
+    speaker: str | None = Field(None, description="Speaker label")
+
+    @field_validator("end")
+    @classmethod
+    def end_after_start(cls, v: float, info) -> float:
+        """Validate end is after start."""
+        if "start" in info.data and v < info.data["start"]:
+            raise ValueError("end must be >= start")
+        return v
+
+
+class SegmentModel(BaseModel):
+    """Transcript segment."""
+
+    start: float = Field(..., ge=0)
+    end: float = Field(..., ge=0)
+    text: str
+    speaker: str | None = None
+    words: list[WordModel] = Field(default_factory=list)
+
+    @field_validator("end")
+    @classmethod
+    def end_after_start(cls, v: float, info) -> float:
+        """Validate end is after start."""
+        if "start" in info.data and v < info.data["start"]:
+            raise ValueError("end must be >= start")
+        return v
+
+
+class RecordingSettings(BaseModel):
+    """Settings for a recording session."""
+
+    input_source: Literal["mic", "speaker", "both"] = Field(
+        default="mic", description="Audio input source"
+    )
+    model: str = Field(default="base", description="Whisper model name")
+    language: str = Field(default="auto", description="Language code or 'auto'")
+    diarization: bool = Field(default=True, description="Enable speaker diarization")
+    noise_reduction: bool = Field(default=True, description="Enable noise reduction")
+    normalization: bool = Field(default=True, description="Enable audio normalization")
+    word_timestamps: bool = Field(
+        default=False, description="Include word-level timestamps"
+    )
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, v: str) -> str:
+        """Validate Whisper model name."""
+        valid = ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"]
+        if v not in valid:
+            raise ValueError(f"Invalid model. Must be one of: {valid}")
+        return v
+
+
+class RecordingOverrides(BaseModel):
+    """Per-recording setting overrides.
+
+    Only light settings can be overridden per-recording.
+    model is daemon-level only (requires restart to change).
+    All fields are optional — None means "use daemon default".
+    """
+
+    language: str | None = Field(None, description="Language code or 'auto'")
+    input_source: Literal["mic", "speaker", "both"] | None = Field(
+        None, description="Audio input source"
+    )
+    diarization: bool | None = Field(None, description="Enable speaker diarization")
+    noise_reduction: bool | None = Field(None, description="Enable noise reduction")
+    normalization: bool | None = Field(None, description="Enable audio normalization")
+    word_timestamps: bool | None = Field(
+        None, description="Include word-level timestamps"
+    )
+
+
+class RecordingCreate(BaseModel):
+    """Request to create/start a new recording."""
+
+    title: str | None = Field(
+        None, max_length=200, description="Optional recording title"
+    )
+    settings: RecordingOverrides | None = Field(
+        None, description="Per-recording setting overrides (None = use daemon defaults)"
+    )
+
+
+class RecordingUpdate(BaseModel):
+    """Request to update a recording."""
+
+    title: str | None = Field(None, max_length=200)
+    speakers: dict[str, str] | None = Field(
+        None, description="Speaker label mapping: {SPEAKER_00: 'Alice'}"
+    )
+
+
+class RecordingResponse(BaseModel):
+    """Full recording response."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(..., description="Unique recording ID")
+    status: RecordingStatus
+    created_at: datetime
+    title: str
+    duration: float = Field(..., ge=0)
+
+    # While recording:
+    audio_level: float | None = Field(
+        None, ge=0, le=1, description="Current audio level (0-1)"
+    )
+
+    # While processing:
+    processing_stage: ProcessingStage | None = None
+    processing_progress: float | None = Field(None, ge=0, le=1)
+
+    # When complete:
+    input_source: str | None = None
+    model: str | None = None
+    language: str | None = None
+    language_confidence: float | None = Field(None, ge=0, le=1)
+    diarized: bool | None = None
+    speakers: list[str] | None = None
+    segments: list[SegmentModel] | None = None
+    transcript: str | None = None
+
+    # Future AI features (structure ready):
+    tags: list[str] = Field(default_factory=list)
+    executive_summary: list[str] = Field(default_factory=list)
+    meeting_notes: list[dict[str, Any]] = Field(default_factory=list)
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+
+    settings: RecordingSettings | dict[str, Any]
+
+
+class RecordingListItem(BaseModel):
+    """Minimal recording info for list views."""
+
+    id: str
+    title: str
+    created_at: datetime
+    duration: float = Field(..., ge=0)
+    status: RecordingStatus
+    speakers: list[str] = Field(default_factory=list)
+    language: str | None = None
+
+
+class RecordingListResponse(BaseModel):
+    """Paginated list of recordings."""
+
+    total: int = Field(..., ge=0)
+    limit: int = Field(..., ge=1, le=100)
+    offset: int = Field(..., ge=0)
+    recordings: list[RecordingListItem]
