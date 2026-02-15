@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from harkd.api.models.recording import (
+    ActiveRecordingUpdate,
     ProcessingStage,
     RecordingCreate,
     RecordingListItem,
@@ -104,7 +105,8 @@ class TestRecordingSettings:
     def test_settings_defaults(self):
         """Test default settings values."""
         settings = RecordingSettings()
-        assert settings.input_source == "mic"
+        assert settings.mic_enabled is True
+        assert settings.speaker_enabled is True
         assert settings.model == "base"
         assert settings.language == "auto"
         assert settings.diarization is True
@@ -115,7 +117,8 @@ class TestRecordingSettings:
     def test_settings_custom(self):
         """Test creating settings with custom values."""
         settings = RecordingSettings(
-            input_source="speaker",
+            mic_enabled=True,
+            speaker_enabled=False,
             model="large-v3",
             language="en",
             diarization=False,
@@ -123,7 +126,8 @@ class TestRecordingSettings:
             normalization=False,
             word_timestamps=True,
         )
-        assert settings.input_source == "speaker"
+        assert settings.mic_enabled is True
+        assert settings.speaker_enabled is False
         assert settings.model == "large-v3"
         assert settings.language == "en"
         assert settings.diarization is False
@@ -150,10 +154,9 @@ class TestRecordingSettings:
             settings = RecordingSettings(model=model)
             assert settings.model == model
 
-    def test_settings_invalid_input_source(self):
-        """Test validation fails for invalid input source."""
-        with pytest.raises(ValidationError):
-            RecordingSettings(input_source="invalid")
+    def test_settings_no_input_source_field(self):
+        """Test that input_source field has been removed."""
+        assert "input_source" not in RecordingSettings.model_fields
 
 
 class TestRecordingOverrides:
@@ -163,7 +166,8 @@ class TestRecordingOverrides:
         """Test creating overrides with no values set."""
         overrides = RecordingOverrides()
         assert overrides.language is None
-        assert overrides.input_source is None
+        assert overrides.mic_enabled is None
+        assert overrides.speaker_enabled is None
         assert overrides.diarization is None
         assert overrides.noise_reduction is None
         assert overrides.normalization is None
@@ -174,7 +178,7 @@ class TestRecordingOverrides:
         overrides = RecordingOverrides(language="en", diarization=False)
         assert overrides.language == "en"
         assert overrides.diarization is False
-        assert overrides.input_source is None  # Not overridden
+        assert overrides.mic_enabled is None  # Not overridden
 
     def test_overrides_exclude_none(self):
         """Test model_dump(exclude_none=True) returns only set fields."""
@@ -190,10 +194,55 @@ class TestRecordingOverrides:
             or "model" not in RecordingOverrides.model_fields
         )
 
-    def test_overrides_invalid_input_source(self):
-        """Test validation fails for invalid input source."""
-        with pytest.raises(ValidationError):
-            RecordingOverrides(input_source="invalid")
+    def test_overrides_both_disabled_raises(self):
+        """Test validation fails when both inputs are explicitly disabled."""
+        with pytest.raises(ValidationError) as exc_info:
+            RecordingOverrides(mic_enabled=False, speaker_enabled=False)
+        assert "At least one input must be enabled" in str(exc_info.value)
+
+    def test_overrides_one_disabled_ok(self):
+        """Test that disabling one input while enabling the other is fine."""
+        overrides = RecordingOverrides(mic_enabled=False, speaker_enabled=True)
+        assert overrides.mic_enabled is False
+        assert overrides.speaker_enabled is True
+
+    def test_overrides_no_input_source_field(self):
+        """Test that input_source field has been removed."""
+        assert "input_source" not in RecordingOverrides.model_fields
+
+
+class TestActiveRecordingUpdate:
+    """Test ActiveRecordingUpdate."""
+
+    def test_empty_update(self):
+        """Test creating empty update."""
+        update = ActiveRecordingUpdate()
+        assert update.title is None
+        assert update.mic_enabled is None
+        assert update.speaker_enabled is None
+
+    def test_title_update(self):
+        """Test updating title only."""
+        update = ActiveRecordingUpdate(title="New Title")
+        assert update.title == "New Title"
+        assert update.mic_enabled is None
+        assert update.speaker_enabled is None
+
+    def test_toggle_mic(self):
+        """Test toggling mic."""
+        update = ActiveRecordingUpdate(mic_enabled=False)
+        assert update.mic_enabled is False
+
+    def test_toggle_speaker(self):
+        """Test toggling speaker."""
+        update = ActiveRecordingUpdate(speaker_enabled=False)
+        assert update.speaker_enabled is False
+
+    def test_both_disabled_allowed(self):
+        """Test that both disabled is allowed mid-recording (no validation)."""
+        update = ActiveRecordingUpdate(mic_enabled=False, speaker_enabled=False)
+        assert update.mic_enabled is False
+        assert update.speaker_enabled is False
 
 
 class TestRecordingCreate:
@@ -266,12 +315,18 @@ class TestRecordingResponse:
             created_at=datetime(2026, 1, 15, 10, 30, 0),
             title="Test recording",
             duration=45.3,
-            audio_level=0.42,
+            mic_enabled=True,
+            speaker_enabled=True,
+            mic_level=0.42,
+            speaker_level=0.35,
             settings=RecordingSettings(),
         )
         assert response.status == RecordingStatus.RECORDING
         assert response.duration == 45.3
-        assert response.audio_level == 0.42
+        assert response.mic_level == 0.42
+        assert response.speaker_level == 0.35
+        assert response.mic_enabled is True
+        assert response.speaker_enabled is True
         assert response.processing_stage is None
 
     def test_response_processing_status(self):
@@ -301,7 +356,8 @@ class TestRecordingResponse:
             created_at=datetime(2026, 1, 15, 10, 30, 0),
             title="Test recording",
             duration=120.5,
-            input_source="mic",
+            mic_enabled=True,
+            speaker_enabled=False,
             model="base",
             language="en",
             language_confidence=0.98,
@@ -319,8 +375,8 @@ class TestRecordingResponse:
         assert len(response.speakers) == 2
         assert len(response.segments) == 1
 
-    def test_response_invalid_audio_level(self):
-        """Test validation fails for audio level > 1."""
+    def test_response_invalid_mic_level(self):
+        """Test validation fails for mic level > 1."""
         with pytest.raises(ValidationError):
             RecordingResponse(
                 id="rec-123",
@@ -328,7 +384,20 @@ class TestRecordingResponse:
                 created_at=datetime.now(),
                 title="Test",
                 duration=10.0,
-                audio_level=1.5,
+                mic_level=1.5,
+                settings=RecordingSettings(),
+            )
+
+    def test_response_invalid_speaker_level(self):
+        """Test validation fails for speaker level > 1."""
+        with pytest.raises(ValidationError):
+            RecordingResponse(
+                id="rec-123",
+                status=RecordingStatus.RECORDING,
+                created_at=datetime.now(),
+                title="Test",
+                duration=10.0,
+                speaker_level=1.5,
                 settings=RecordingSettings(),
             )
 
@@ -347,6 +416,11 @@ class TestRecordingResponse:
         assert response.meeting_notes == []
         assert response.tasks == []
         assert response.decisions == []
+
+    def test_response_no_input_source_or_audio_level(self):
+        """Test that old fields are removed."""
+        assert "input_source" not in RecordingResponse.model_fields
+        assert "audio_level" not in RecordingResponse.model_fields
 
 
 class TestRecordingListItem:

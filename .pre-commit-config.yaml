@@ -29,7 +29,7 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
-        args: [src/harkd/]
+        args: [src/harkd/, tests/]
         verbose: true
 
       - id: pytest

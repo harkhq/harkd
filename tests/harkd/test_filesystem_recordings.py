@@ -26,7 +26,8 @@ def sample_recording():
         created_at=datetime(2026, 1, 15, 10, 30, 0),
         title="Test Recording",
         duration=120.5,
-        input_source="mic",
+        mic_enabled=True,
+        speaker_enabled=False,
         model="base",
         language="en",
         language_confidence=0.98,
@@ -292,7 +293,8 @@ async def test_json_serialization_roundtrip(temp_storage, sample_recording):
     assert retrieved.created_at == sample_recording.created_at
     assert retrieved.title == sample_recording.title
     assert retrieved.duration == sample_recording.duration
-    assert retrieved.input_source == sample_recording.input_source
+    assert retrieved.mic_enabled == sample_recording.mic_enabled
+    assert retrieved.speaker_enabled == sample_recording.speaker_enabled
     assert retrieved.model == sample_recording.model
     assert retrieved.language == sample_recording.language
     assert retrieved.language_confidence == sample_recording.language_confidence

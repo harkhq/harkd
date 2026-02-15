@@ -12,6 +12,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from harkd.api.models.recording import (
+    ActiveRecordingUpdate,
     ProcessingStage,
     RecordingCreate,
     RecordingListResponse,
@@ -26,6 +27,8 @@ from harkd.config import HarkdSettings
 from harkd.exceptions import (
     InvalidStateError,
     NoActiveRecordingError,
+    NoLoopbackDeviceError,
+    NoMicrophoneError,
     RecordingInProgressError,
     RecordingNotFoundError,
 )
@@ -77,7 +80,8 @@ class RecordingService:
         self._processing_tasks: dict[str, asyncio.Task] = {}
         self._recorder: AudioRecorder | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
-        self._audio_level: float = 0.0
+        self._mic_level: float = 0.0
+        self._speaker_level: float = 0.0
         self._last_audio_level_write: float = 0.0
 
     async def start_recording(self, create_request: RecordingCreate) -> RecordingResponse:
@@ -111,11 +115,19 @@ class RecordingService:
             overrides = create_request.settings.model_dump(exclude_none=True)
             final_settings.update(overrides)
 
+        # Determine mic/speaker enabled (default both True)
+        mic_enabled = final_settings.pop("mic_enabled", True)
+        speaker_enabled = final_settings.pop("speaker_enabled", True)
+
         logger.info(
             f"Starting recording {recording_id}: "
-            f"source={final_settings['input_source']}, "
+            f"mic={mic_enabled}, speaker={speaker_enabled}, "
             f"model={final_settings['model']}"
         )
+
+        # Store mic/speaker state in settings for the response
+        final_settings["mic_enabled"] = mic_enabled
+        final_settings["speaker_enabled"] = speaker_enabled
 
         # Create initial recording metadata
         storage_recording = StorageRecording(
@@ -124,7 +136,10 @@ class RecordingService:
             created_at=now,
             title=create_request.title or "Untitled Recording",
             duration=0.0,
-            audio_level=0.0,
+            mic_enabled=mic_enabled,
+            speaker_enabled=speaker_enabled,
+            mic_level=0.0,
+            speaker_level=0.0,
             settings=cast(Any, final_settings),
         )
 
@@ -142,9 +157,12 @@ class RecordingService:
         try:
             recorder = AudioRecorder(
                 output_path=audio_path,
-                input_source=final_settings["input_source"],
+                mic_enabled=mic_enabled,
+                speaker_enabled=speaker_enabled,
                 sample_rate=16000,  # Whisper uses 16kHz
-                level_callback=lambda level: self._update_audio_level(recording_id, level),
+                level_callback=lambda mic_lvl, spk_lvl: self._update_audio_levels(
+                    recording_id, mic_lvl, spk_lvl
+                ),
             )
 
             # Start recording
@@ -195,8 +213,14 @@ class RecordingService:
 
         # Update duration with real-time value
         storage_recording.duration = self.recording_state.duration
-        # Use in-memory audio level instead of storage
-        storage_recording.audio_level = self._audio_level
+        # Use in-memory levels instead of storage
+        storage_recording.mic_level = self._mic_level
+        storage_recording.speaker_level = self._speaker_level
+
+        # Update enabled state from recorder
+        if self._recorder:
+            storage_recording.mic_enabled = not self._recorder._mic_muted
+            storage_recording.speaker_enabled = not self._recorder._speaker_muted
 
         return self._storage_to_response(storage_recording)
 
@@ -272,7 +296,8 @@ class RecordingService:
         storage_recording.duration = duration
         storage_recording.processing_stage = "preprocessing"
         storage_recording.processing_progress = 0.0
-        storage_recording.audio_level = None  # No longer recording
+        storage_recording.mic_level = None  # No longer recording
+        storage_recording.speaker_level = None
 
         await self.storage.update(storage_recording)
 
@@ -476,8 +501,7 @@ class RecordingService:
             if disallowed:
                 raise InvalidStateError(
                     message=(
-                        f"Can only update {', '.join(sorted(disallowed))}"
-                        " on completed recordings"
+                        f"Can only update {', '.join(sorted(disallowed))} on completed recordings"
                     ),
                     current_state=storage_recording.status,
                     expected_state=RecordingStatus.COMPLETE.value,
@@ -505,6 +529,70 @@ class RecordingService:
         logger.info(f"Recording {recording_id} updated successfully")
         return self._storage_to_response(storage_recording)
 
+    async def toggle_inputs(self, mic_enabled: bool | None, speaker_enabled: bool | None) -> None:
+        """Toggle mic/speaker inputs on the active recording.
+
+        Args:
+            mic_enabled: Set mic state (None = no change)
+            speaker_enabled: Set speaker state (None = no change)
+
+        Raises:
+            NoActiveRecordingError: If no recording is active
+            NoMicrophoneError: If trying to enable an unavailable mic
+            NoLoopbackDeviceError: If trying to enable an unavailable speaker
+        """
+        if self._recorder is None:
+            raise NoActiveRecordingError()
+        if mic_enabled is not None:
+            if mic_enabled and not self._recorder._mic_available:
+                raise NoMicrophoneError()
+            self._recorder.set_mic_enabled(mic_enabled)
+        if speaker_enabled is not None:
+            if speaker_enabled and not self._recorder._speaker_available:
+                raise NoLoopbackDeviceError()
+            self._recorder.set_speaker_enabled(speaker_enabled)
+
+    async def update_active_recording(self, update: ActiveRecordingUpdate) -> RecordingResponse:
+        """Update the active recording (title, input toggles).
+
+        Args:
+            update: Update request with optional title, mic_enabled, speaker_enabled
+
+        Returns:
+            Updated recording response
+
+        Raises:
+            NoActiveRecordingError: If no recording is active
+        """
+        if not self.recording_state.is_recording:
+            raise NoActiveRecordingError()
+
+        active_id = self.recording_state.active_recording_id
+        if not active_id:
+            raise NoActiveRecordingError()
+
+        # Toggle inputs if requested
+        if update.mic_enabled is not None or update.speaker_enabled is not None:
+            await self.toggle_inputs(update.mic_enabled, update.speaker_enabled)
+
+        # Update title in storage if requested
+        if update.title is not None:
+            storage_recording = await self.storage.get(active_id)
+            if storage_recording is None:
+                raise RecordingNotFoundError(active_id)
+            storage_recording.title = update.title
+            await self.storage.update(storage_recording)
+
+        # Update toggle state in storage
+        if update.mic_enabled is not None or update.speaker_enabled is not None:
+            storage_recording = await self.storage.get(active_id)
+            if storage_recording is not None and self._recorder is not None:
+                storage_recording.mic_enabled = not self._recorder._mic_muted
+                storage_recording.speaker_enabled = not self._recorder._speaker_muted
+                await self.storage.update(storage_recording)
+
+        return await self.get_active_recording()
+
     async def delete_recording(self, recording_id: str) -> None:
         """Delete a recording.
 
@@ -518,16 +606,20 @@ class RecordingService:
         """
         await self.cancel_recording(recording_id)
 
-    def _update_audio_level(self, recording_id: str, level: float) -> None:
-        """Update audio level for active recording (called from recorder callback).
+    def _update_audio_levels(
+        self, recording_id: str, mic_level: float, speaker_level: float
+    ) -> None:
+        """Update audio levels for active recording (called from recorder callback).
 
-        Keeps audio level in memory and throttles disk writes to avoid excessive I/O.
+        Keeps audio levels in memory and throttles disk writes to avoid excessive I/O.
 
         Args:
             recording_id: Recording ID
-            level: Audio level (0-1)
+            mic_level: Mic audio level (0-1)
+            speaker_level: Speaker audio level (0-1)
         """
-        self._audio_level = level
+        self._mic_level = mic_level
+        self._speaker_level = speaker_level
 
         # Throttle disk writes to at most once per second
         now = time.monotonic()
@@ -538,23 +630,28 @@ class RecordingService:
         # Schedule async update from different thread
         if self._event_loop and not self._event_loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                self._async_update_audio_level(recording_id, level), self._event_loop
+                self._async_update_audio_levels(recording_id, mic_level, speaker_level),
+                self._event_loop,
             )
 
-    async def _async_update_audio_level(self, recording_id: str, level: float) -> None:
-        """Async update of audio level (throttled).
+    async def _async_update_audio_levels(
+        self, recording_id: str, mic_level: float, speaker_level: float
+    ) -> None:
+        """Async update of audio levels (throttled).
 
         Args:
             recording_id: Recording ID
-            level: Audio level (0-1)
+            mic_level: Mic audio level (0-1)
+            speaker_level: Speaker audio level (0-1)
         """
         try:
             storage_recording = await self.storage.get(recording_id)
             if storage_recording and storage_recording.status == RecordingStatus.RECORDING.value:
-                storage_recording.audio_level = level
+                storage_recording.mic_level = mic_level
+                storage_recording.speaker_level = speaker_level
                 await self.storage.update(storage_recording)
         except Exception as e:
-            logger.debug(f"Failed to update audio level for {recording_id}: {e}")
+            logger.debug(f"Failed to update audio levels for {recording_id}: {e}")
 
     async def _run_transcription_subprocess(
         self,
@@ -792,7 +889,6 @@ class RecordingService:
             storage_recording.status = "complete"
             storage_recording.processing_stage = None
             storage_recording.processing_progress = None
-            storage_recording.input_source = settings.get("input_source")
             storage_recording.model = settings.get("model")
             storage_recording.language = detected_language
             storage_recording.language_confidence = language_confidence
@@ -871,12 +967,14 @@ class RecordingService:
             created_at=storage.created_at,
             title=storage.title,
             duration=storage.duration,
-            audio_level=storage.audio_level,
+            mic_enabled=storage.mic_enabled,
+            speaker_enabled=storage.speaker_enabled,
+            mic_level=storage.mic_level,
+            speaker_level=storage.speaker_level,
             processing_stage=(
                 ProcessingStage(storage.processing_stage) if storage.processing_stage else None
             ),
             processing_progress=storage.processing_progress,
-            input_source=storage.input_source,
             model=storage.model,
             language=storage.language,
             language_confidence=storage.language_confidence,

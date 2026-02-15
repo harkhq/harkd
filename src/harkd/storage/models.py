@@ -29,14 +29,16 @@ class StorageRecording(BaseModel):
     duration: float = Field(ge=0)
 
     # Recording state (while active/processing)
-    audio_level: float | None = Field(None, ge=0, le=1)
+    mic_enabled: bool | None = None
+    speaker_enabled: bool | None = None
+    mic_level: float | None = Field(None, ge=0, le=1)
+    speaker_level: float | None = Field(None, ge=0, le=1)
     processing_stage: (
         Literal["preprocessing", "transcription", "diarization", "meeting_minutes"] | None
     ) = None
     processing_progress: float | None = Field(None, ge=0, le=1)
 
     # Complete recording data
-    input_source: str | None = None
     model: str | None = None
     language: str | None = None
     language_confidence: float | None = Field(None, ge=0, le=1)

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from harkd.api.deps import get_recording_service
 from harkd.api.models.recording import (
+    ActiveRecordingUpdate,
     RecordingCreate,
     RecordingListResponse,
     RecordingResponse,
@@ -17,6 +18,8 @@ from harkd.api.models.recording import (
 from harkd.exceptions import (
     InvalidStateError,
     NoActiveRecordingError,
+    NoLoopbackDeviceError,
+    NoMicrophoneError,
     RecordingInProgressError,
     RecordingNotFoundError,
 )
@@ -157,6 +160,52 @@ async def get_active_recording(
         return result
     except NoActiveRecordingError as e:
         logger.warning("No active recording")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": {
+                    "code": e.code,
+                    "message": e.message,
+                    "details": e.details,
+                }
+            },
+        ) from e
+
+
+@router.patch(
+    "/active",
+    response_model=RecordingResponse,
+    summary="Update active recording",
+    description="Update the active recording (title, mic/speaker toggles).",
+)
+async def update_active_recording(
+    request: ActiveRecordingUpdate,
+    service: ServiceDep,
+) -> RecordingResponse:
+    """Update the active recording (title, mic/speaker toggles).
+
+    Returns:
+        Updated recording response
+
+    Raises:
+        HTTPException 409: If no recording is active or device unavailable
+    """
+    logger.info(f"PATCH /recordings/active - {request}")
+
+    try:
+        return await service.update_active_recording(request)
+    except NoActiveRecordingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": {
+                    "code": e.code,
+                    "message": e.message,
+                    "details": e.details,
+                }
+            },
+        ) from e
+    except (NoMicrophoneError, NoLoopbackDeviceError) as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={

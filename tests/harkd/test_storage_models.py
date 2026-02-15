@@ -35,7 +35,8 @@ def test_storage_recording_complete():
         created_at=now,
         title="Complete Recording",
         duration=120.5,
-        input_source="mic",
+        mic_enabled=True,
+        speaker_enabled=False,
         model="base",
         language="en",
         language_confidence=0.98,
@@ -47,6 +48,8 @@ def test_storage_recording_complete():
     )
     assert recording.status == "complete"
     assert recording.duration == 120.5
+    assert recording.mic_enabled is True
+    assert recording.speaker_enabled is False
     assert len(recording.speakers) == 2
     assert len(recording.segments) == 1
     assert recording.transcript == "Hello world"
@@ -102,8 +105,8 @@ def test_storage_recording_duration_validation():
         )
 
 
-def test_storage_recording_audio_level_validation():
-    """Test StorageRecording audio_level must be 0-1."""
+def test_storage_recording_mic_level_validation():
+    """Test StorageRecording mic_level must be 0-1."""
     # Valid levels
     for level in [0.0, 0.5, 1.0]:
         recording = StorageRecording(
@@ -112,10 +115,10 @@ def test_storage_recording_audio_level_validation():
             created_at=datetime.now(),
             title="Test",
             duration=0.0,
-            audio_level=level,
+            mic_level=level,
             settings={},
         )
-        assert recording.audio_level == level
+        assert recording.mic_level == level
 
     # Out of range
     with pytest.raises(ValidationError):
@@ -125,7 +128,35 @@ def test_storage_recording_audio_level_validation():
             created_at=datetime.now(),
             title="Test",
             duration=0.0,
-            audio_level=1.5,
+            mic_level=1.5,
+            settings={},
+        )
+
+
+def test_storage_recording_speaker_level_validation():
+    """Test StorageRecording speaker_level must be 0-1."""
+    # Valid levels
+    for level in [0.0, 0.5, 1.0]:
+        recording = StorageRecording(
+            id="test",
+            status="recording",
+            created_at=datetime.now(),
+            title="Test",
+            duration=0.0,
+            speaker_level=level,
+            settings={},
+        )
+        assert recording.speaker_level == level
+
+    # Out of range
+    with pytest.raises(ValidationError):
+        StorageRecording(
+            id="test",
+            status="recording",
+            created_at=datetime.now(),
+            title="Test",
+            duration=0.0,
+            speaker_level=1.5,
             settings={},
         )
 

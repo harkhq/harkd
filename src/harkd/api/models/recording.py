@@ -2,9 +2,9 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 __all__ = [
     "RecordingStatus",
@@ -15,6 +15,7 @@ __all__ = [
     "RecordingOverrides",
     "RecordingCreate",
     "RecordingUpdate",
+    "ActiveRecordingUpdate",
     "RecordingResponse",
     "RecordingListItem",
     "RecordingListResponse",
@@ -77,9 +78,8 @@ class SegmentModel(BaseModel):
 class RecordingSettings(BaseModel):
     """Settings for a recording session."""
 
-    input_source: Literal["mic", "speaker", "both"] = Field(
-        default="mic", description="Audio input source"
-    )
+    mic_enabled: bool = Field(default=True, description="Microphone input enabled")
+    speaker_enabled: bool = Field(default=True, description="Speaker input enabled")
     model: str = Field(default="base", description="Whisper model name")
     language: str = Field(default="auto", description="Language code or 'auto'")
     diarization: bool = Field(default=True, description="Enable speaker diarization")
@@ -106,13 +106,19 @@ class RecordingOverrides(BaseModel):
     """
 
     language: str | None = Field(None, description="Language code or 'auto'")
-    input_source: Literal["mic", "speaker", "both"] | None = Field(
-        None, description="Audio input source"
-    )
+    mic_enabled: bool | None = Field(None, description="Microphone input enabled")
+    speaker_enabled: bool | None = Field(None, description="Speaker input enabled")
     diarization: bool | None = Field(None, description="Enable speaker diarization")
     noise_reduction: bool | None = Field(None, description="Enable noise reduction")
     normalization: bool | None = Field(None, description="Enable audio normalization")
     word_timestamps: bool | None = Field(None, description="Include word-level timestamps")
+
+    @model_validator(mode="after")
+    def at_least_one_input(self) -> "RecordingOverrides":
+        """Validate that at least one input is enabled when both are explicitly set."""
+        if self.mic_enabled is False and self.speaker_enabled is False:
+            raise ValueError("At least one input must be enabled")
+        return self
 
 
 class RecordingCreate(BaseModel):
@@ -133,6 +139,14 @@ class RecordingUpdate(BaseModel):
     )
 
 
+class ActiveRecordingUpdate(BaseModel):
+    """Request to update the active recording (title, input toggles)."""
+
+    title: str | None = Field(None, max_length=200)
+    mic_enabled: bool | None = None
+    speaker_enabled: bool | None = None
+
+
 class RecordingResponse(BaseModel):
     """Full recording response."""
 
@@ -145,14 +159,18 @@ class RecordingResponse(BaseModel):
     duration: float = Field(..., ge=0)
 
     # While recording:
-    audio_level: float | None = Field(None, ge=0, le=1, description="Current audio level (0-1)")
+    mic_enabled: bool | None = None
+    speaker_enabled: bool | None = None
+    mic_level: float | None = Field(None, ge=0, le=1, description="Current mic audio level (0-1)")
+    speaker_level: float | None = Field(
+        None, ge=0, le=1, description="Current speaker audio level (0-1)"
+    )
 
     # While processing:
     processing_stage: ProcessingStage | None = None
     processing_progress: float | None = Field(None, ge=0, le=1)
 
     # When complete:
-    input_source: str | None = None
     model: str | None = None
     language: str | None = None
     language_confidence: float | None = Field(None, ge=0, le=1)

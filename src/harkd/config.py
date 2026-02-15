@@ -32,9 +32,7 @@ class CorsSettings(BaseSettings):
     """CORS configuration."""
 
     enabled: bool = True
-    origins: list[str] = Field(
-        default_factory=lambda: ["*"]
-    )
+    origins: list[str] = Field(default_factory=lambda: ["*"])
     allow_credentials: bool = True
     allow_methods: list[str] = Field(default_factory=lambda: ["*"])
     allow_headers: list[str] = Field(default_factory=lambda: ["*"])
@@ -76,9 +74,6 @@ class RecordingDefaults(BaseModel):
     model: str = Field(default="large-v3", description="Whisper model name")
     word_timestamps: bool = Field(default=False, description="Include word-level timestamps")
     language: str = Field(default="auto", description="Language code or 'auto'")
-    input_source: Literal["mic", "speaker", "both"] = Field(
-        default="both", description="Audio input source"
-    )
     diarization: bool = Field(default=True, description="Enable speaker diarization")
     noise_reduction: bool = Field(default=True, description="Enable noise reduction")
     normalization: bool = Field(default=True, description="Enable audio normalization")

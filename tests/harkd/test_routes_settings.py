@@ -21,7 +21,6 @@ def custom_settings(tmp_path):
         recording=RecordingDefaults(
             model="small",
             language="en",
-            input_source="mic",
             diarization=False,
             word_timestamps=True,
         ),
@@ -55,7 +54,6 @@ def test_get_settings_returns_daemon_defaults(client):
 
     data = response.json()
     assert data["model"] == "large-v3"
-    assert data["input_source"] == "both"
     assert data["language"] == "auto"
     assert data["diarization"] is True
     assert data["noise_reduction"] is True
@@ -71,7 +69,6 @@ def test_get_settings_reflects_custom_config(custom_client):
     data = response.json()
     assert data["model"] == "small"
     assert data["language"] == "en"
-    assert data["input_source"] == "mic"
     assert data["diarization"] is False
     assert data["word_timestamps"] is True
     # Unchanged defaults
@@ -105,7 +102,6 @@ def test_get_settings_response_model(client):
         "model",
         "word_timestamps",
         "language",
-        "input_source",
         "diarization",
         "noise_reduction",
         "normalization",

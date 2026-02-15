@@ -3,6 +3,7 @@
 from harkd.api.models.error import ErrorDetail, ErrorResponse
 from harkd.api.models.health import HealthResponse
 from harkd.api.models.recording import (
+    ActiveRecordingUpdate,
     ProcessingStage,
     RecordingCreate,
     RecordingListItem,
@@ -31,6 +32,7 @@ __all__ = [
     # Health models
     "HealthResponse",
     # Recording models
+    "ActiveRecordingUpdate",
     "ProcessingStage",
     "RecordingCreate",
     "RecordingListItem",

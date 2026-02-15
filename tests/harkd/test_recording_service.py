@@ -109,7 +109,8 @@ class TestStartRecording:
         assert result.status == RecordingStatus.RECORDING
         assert result.title == "Test Recording"
         assert result.duration == 0.0
-        assert result.audio_level == 0.0
+        assert result.mic_level == 0.0
+        assert result.speaker_level == 0.0
         assert result.processing_stage is None
         assert result.processing_progress is None
         assert result.transcript is None
@@ -194,7 +195,8 @@ class TestStartRecording:
         # Get stored settings
         stored = await service.storage.get(result.id)
         assert stored.settings["model"] == "large-v3"
-        assert stored.settings["input_source"] == "both"
+        assert stored.settings["mic_enabled"] is True
+        assert stored.settings["speaker_enabled"] is True
         assert stored.settings["language"] == "auto"
         assert stored.settings["diarization"] is True
 
@@ -211,7 +213,7 @@ class TestStartRecording:
         assert stored.settings["diarization"] is False
         # From daemon defaults
         assert stored.settings["model"] == "large-v3"
-        assert stored.settings["input_source"] == "both"
+        assert stored.settings["mic_enabled"] is True
         assert stored.settings["word_timestamps"] is False
 
     @pytest.mark.asyncio
@@ -220,7 +222,8 @@ class TestStartRecording:
         request = RecordingCreate(
             settings=RecordingOverrides(
                 language="de",
-                input_source="mic",
+                mic_enabled=True,
+                speaker_enabled=False,
                 diarization=False,
                 noise_reduction=False,
                 normalization=False,
@@ -232,7 +235,8 @@ class TestStartRecording:
 
         stored = await service.storage.get(result.id)
         assert stored.settings["language"] == "de"
-        assert stored.settings["input_source"] == "mic"
+        assert stored.settings["mic_enabled"] is True
+        assert stored.settings["speaker_enabled"] is False
         assert stored.settings["diarization"] is False
         assert stored.settings["noise_reduction"] is False
         assert stored.settings["normalization"] is False
@@ -929,7 +933,7 @@ class TestAudioLevelCallback:
         # Simulate level callback being called from different thread
         # (as would happen with real AudioRecorder)
         def call_from_thread():
-            service._update_audio_level(recording_id, 0.75)
+            service._update_audio_levels(recording_id, 0.75, 0.4)
 
         thread = threading.Thread(target=call_from_thread)
         thread.start()
@@ -939,7 +943,8 @@ class TestAudioLevelCallback:
         await asyncio.sleep(0.1)
 
         # Verify in-memory level was updated
-        assert service._audio_level == 0.75
+        assert service._mic_level == 0.75
+        assert service._speaker_level == 0.4
 
         # Verify the thread completed without error
         assert not thread.is_alive()

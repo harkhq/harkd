@@ -96,7 +96,6 @@ def test_recording_defaults():
     assert defaults.model == "large-v3"
     assert defaults.word_timestamps is False
     assert defaults.language == "auto"
-    assert defaults.input_source == "both"
     assert defaults.diarization is True
     assert defaults.noise_reduction is True
     assert defaults.normalization is True
@@ -108,13 +107,11 @@ def test_recording_defaults_custom():
         model="small",
         word_timestamps=True,
         language="en",
-        input_source="mic",
         diarization=False,
     )
     assert defaults.model == "small"
     assert defaults.word_timestamps is True
     assert defaults.language == "en"
-    assert defaults.input_source == "mic"
     assert defaults.diarization is False
 
 
@@ -129,14 +126,9 @@ def test_recording_defaults_model_validation():
         RecordingDefaults(model="invalid-model")
 
 
-def test_recording_defaults_input_source_validation():
-    """Test RecordingDefaults validates input_source."""
-    for source in ["mic", "speaker", "both"]:
-        defaults = RecordingDefaults(input_source=source)
-        assert defaults.input_source == source
-
-    with pytest.raises(ValueError):
-        RecordingDefaults(input_source="invalid")
+def test_recording_defaults_no_input_source():
+    """Test RecordingDefaults no longer has input_source field."""
+    assert "input_source" not in RecordingDefaults.model_fields
 
 
 def test_harkd_settings_defaults():
@@ -184,7 +176,6 @@ logging:
 recording:
   model: small
   language: en
-  input_source: mic
   diarization: false
 """
     with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -203,7 +194,6 @@ recording:
         assert settings.logging.file == Path("/tmp/harkd.log")
         assert settings.recording.model == "small"
         assert settings.recording.language == "en"
-        assert settings.recording.input_source == "mic"
         assert settings.recording.diarization is False
         # Unspecified fields should use defaults
         assert settings.recording.word_timestamps is False
@@ -256,8 +246,6 @@ def test_harkd_settings_recording_env_override(monkeypatch):
     assert settings.recording.model == "small"
     assert settings.recording.diarization is False
     assert settings.recording.language == "de"
-    # Unset fields should use defaults
-    assert settings.recording.input_source == "both"
 
 
 def test_get_settings_singleton():

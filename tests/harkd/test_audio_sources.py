@@ -175,7 +175,7 @@ class TestPulseAudioMonitorDevices:
         mock_default_sink.return_value = "alsa_output.device.monitor"
 
         result = find_loopback_device()
-        assert result.pulse_source is not None
+        assert result is not None
         assert result.pulse_source == "alsa_output.device.monitor"
 
 

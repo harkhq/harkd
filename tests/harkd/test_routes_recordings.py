@@ -85,10 +85,12 @@ def create_recording_in_storage(settings, recording):
         "created_at": recording.created_at.isoformat(),
         "title": recording.title,
         "duration": recording.duration,
-        "audio_level": recording.audio_level,
+        "mic_enabled": recording.mic_enabled,
+        "speaker_enabled": recording.speaker_enabled,
+        "mic_level": recording.mic_level,
+        "speaker_level": recording.speaker_level,
         "processing_stage": recording.processing_stage,
         "processing_progress": recording.processing_progress,
-        "input_source": recording.input_source,
         "model": recording.model,
         "language": recording.language,
         "language_confidence": recording.language_confidence,
@@ -170,7 +172,8 @@ class TestStartRecording:
             json={
                 "title": "Custom",
                 "settings": {
-                    "input_source": "speaker",
+                    "mic_enabled": True,
+                    "speaker_enabled": False,
                     "language": "en",
                 },
             },
@@ -178,7 +181,8 @@ class TestStartRecording:
 
         assert response.status_code == 201
         data = response.json()
-        assert data["settings"]["input_source"] == "speaker"
+        assert data["settings"]["mic_enabled"] is True
+        assert data["settings"]["speaker_enabled"] is False
         assert data["settings"]["language"] == "en"
         # model comes from daemon defaults
         assert data["settings"]["model"] == "large-v3"
@@ -193,7 +197,8 @@ class TestStartRecording:
         assert response.status_code == 201
         data = response.json()
         assert data["settings"]["model"] == "large-v3"
-        assert data["settings"]["input_source"] == "both"
+        assert data["settings"]["mic_enabled"] is True
+        assert data["settings"]["speaker_enabled"] is True
         assert data["settings"]["language"] == "auto"
         assert data["settings"]["diarization"] is True
 
@@ -650,9 +655,7 @@ class TestListRecordings:
 
         after = (base + timedelta(hours=1)).isoformat()
         before = (base + timedelta(hours=3)).isoformat()
-        response = client.get(
-            f"/api/v1/recordings?created_after={after}&created_before={before}"
-        )
+        response = client.get(f"/api/v1/recordings?created_after={after}&created_before={before}")
         assert response.status_code == 200
         ids = {r["id"] for r in response.json()["recordings"]}
         assert ids == {"rec-1", "rec-2", "rec-3"}
