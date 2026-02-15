@@ -455,16 +455,21 @@ class RecordingService:
         if storage_recording is None:
             raise RecordingNotFoundError(recording_id)
 
-        # Only allow updates for completed recordings
-        if storage_recording.status != RecordingStatus.COMPLETE.value:
-            raise InvalidStateError(
-                message="Can only update completed recordings",
-                current_state=storage_recording.status,
-                expected_state=RecordingStatus.COMPLETE.value,
-            )
-
         # Apply updates
         update_dict = update.model_dump(exclude_unset=True)
+
+        # Non-complete recordings: only title updates allowed
+        if storage_recording.status != RecordingStatus.COMPLETE.value:
+            disallowed = set(update_dict.keys()) - {"title"}
+            if disallowed:
+                raise InvalidStateError(
+                    message=(
+                        f"Can only update {', '.join(sorted(disallowed))}"
+                        " on completed recordings"
+                    ),
+                    current_state=storage_recording.status,
+                    expected_state=RecordingStatus.COMPLETE.value,
+                )
 
         if "title" in update_dict:
             storage_recording.title = update_dict["title"]
@@ -734,6 +739,11 @@ class RecordingService:
 
             # Generate full transcript
             transcript = " ".join(seg["text"] for seg in segments)
+
+            # Re-read title from storage — user may have updated it via PATCH during processing
+            latest = await self.storage.get(recording_id)
+            if latest is not None:
+                storage_recording.title = latest.title
 
             # Generate title if not provided
             if storage_recording.title == "Untitled Recording":

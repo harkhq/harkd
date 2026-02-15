@@ -240,7 +240,10 @@ async def get_recording(
     "/{recording_id}",
     response_model=RecordingResponse,
     summary="Update recording",
-    description="Update recording metadata (title, speakers). Only for completed recordings.",
+    description=(
+        "Update recording metadata (title, speakers). Title can be updated in any state."
+        " Speaker names can only be updated for completed recordings."
+    ),
 )
 async def update_recording(
     recording_id: str,

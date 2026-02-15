@@ -682,8 +682,8 @@ class TestUpdateRecording:
         assert result.segments[0].words[0].speaker == "Alice"
 
     @pytest.mark.asyncio
-    async def test_update_recording_not_complete(self, service, storage):
-        """Test error when updating non-complete recording."""
+    async def test_update_recording_speakers_not_complete(self, service, storage):
+        """Test error when updating speakers on non-complete recording."""
         # Create processing recording
         recording = StorageRecording(
             id="test-123",
@@ -695,8 +695,65 @@ class TestUpdateRecording:
         )
         await storage.create(recording)
 
-        # Try to update
-        update = RecordingUpdate(title="New Title")
+        # Try to update speakers — should be rejected
+        update = RecordingUpdate(speakers={"SPEAKER_01": "Alice"})
+        with pytest.raises(InvalidStateError):
+            await service.update_recording("test-123", update)
+
+    @pytest.mark.asyncio
+    async def test_update_title_during_recording(self, service, storage):
+        """Test that title can be updated on a recording-state recording."""
+        recording = StorageRecording(
+            id="test-123",
+            status=RecordingStatus.RECORDING.value,
+            created_at=datetime.now(UTC),
+            title="Untitled Recording",
+            duration=0.0,
+            settings={},
+        )
+        await storage.create(recording)
+
+        update = RecordingUpdate(title="My Meeting")
+        result = await service.update_recording("test-123", update)
+
+        assert result.title == "My Meeting"
+
+        # Verify persisted
+        stored = await storage.get("test-123")
+        assert stored.title == "My Meeting"
+
+    @pytest.mark.asyncio
+    async def test_update_title_during_processing(self, service, storage):
+        """Test that title can be updated on a processing recording."""
+        recording = StorageRecording(
+            id="test-123",
+            status=RecordingStatus.PROCESSING.value,
+            created_at=datetime.now(UTC),
+            title="Untitled Recording",
+            duration=5.0,
+            settings={},
+        )
+        await storage.create(recording)
+
+        update = RecordingUpdate(title="Weekly Standup")
+        result = await service.update_recording("test-123", update)
+
+        assert result.title == "Weekly Standup"
+
+    @pytest.mark.asyncio
+    async def test_update_speakers_during_recording_rejected(self, service, storage):
+        """Test that speakers cannot be updated on a recording-state recording."""
+        recording = StorageRecording(
+            id="test-123",
+            status=RecordingStatus.RECORDING.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=0.0,
+            settings={},
+        )
+        await storage.create(recording)
+
+        update = RecordingUpdate(speakers={"SPEAKER_01": "Alice"})
         with pytest.raises(InvalidStateError):
             await service.update_recording("test-123", update)
 

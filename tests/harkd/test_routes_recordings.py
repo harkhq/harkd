@@ -691,8 +691,8 @@ class TestUpdateRecording:
         assert "SPEAKER_01" not in str(data["segments"]), "Old speaker IDs should not remain"
         assert "SPEAKER_02" not in str(data["segments"]), "Old speaker IDs should not remain"
 
-    def test_update_recording_not_complete(self, client, settings):
-        """Test error when updating non-complete recording."""
+    def test_update_recording_speakers_not_complete(self, client, settings):
+        """Test error when updating speakers on non-complete recording."""
         recording = StorageRecording(
             id="test-123",
             status=RecordingStatus.PROCESSING.value,
