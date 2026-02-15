@@ -75,7 +75,10 @@ def create_app(settings: HarkdSettings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="harkd",
-        description="Voice recording and transcription daemon",
+        description=(
+            "Meeting minutes, summaries, transcription & diarization,"
+            " and task extraction daemon with REST API"
+        ),
         version=__version__,
         lifespan=lifespan,
     )

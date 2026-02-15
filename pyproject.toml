@@ -1,7 +1,7 @@
 [project]
 name = "harkd"
 dynamic = ["version"]
-description = "Voice recording and transcription daemon with REST API"
+description = "Meeting minutes, summaries, transcription & diarization, and task extraction daemon with REST API"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "AGPL-3.0-or-later"}
