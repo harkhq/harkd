@@ -4,7 +4,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
-> Voice recording, transcription, meeting minutes, summaries, and task extraction daemon with REST API
+> meeting minutes, summaries, transcription & diarization, and task extraction daemon with REST API
 
 harkd is a background service that records audio, transcribes it with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), and exposes everything over a local REST API. Optional LLM integrations enable meeting minutes, summaries, and task extraction. It runs 100% offline by default - no cloud, no API keys, no data leaves your machine.
 
@@ -97,7 +97,6 @@ logging:
 recording:
   model: large-v3       # tiny, base, small, medium, large, large-v2, large-v3
   language: auto         # language code or "auto"
-  input_source: both     # mic, speaker, or both
   diarization: true      # enable speaker diarization
   noise_reduction: true  # enable noise reduction
   normalization: true    # enable audio normalization
@@ -145,7 +144,7 @@ Diarization requires a HuggingFace token for [pyannote](https://github.com/pyann
 
 ### System Audio Capture
 
-Recording system audio (`input_source: speaker` or `input_source: both`) works differently per platform:
+Recording system audio (speaker input) works differently per platform:
 
 **Linux (PulseAudio/PipeWire):** Uses monitor sources automatically. Verify with:
 
