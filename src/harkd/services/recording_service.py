@@ -808,7 +808,7 @@ class RecordingService:
 
             # Check if diarization is enabled
             diarization_enabled = settings.get("diarization", False)
-            word_timestamps = settings.get("word_timestamps", False) or diarization_enabled
+            word_timestamps = settings.get("word_timestamps", False)
 
             # Prepare transcription parameters
             model_name = settings.get("model", "base")
@@ -845,6 +845,11 @@ class RecordingService:
             segments, detected_language, language_confidence, speakers = (
                 self._convert_transcription_result(result_dict)
             )
+
+            # Strip word-level timestamps if not requested by user
+            if not word_timestamps:
+                for seg in segments:
+                    seg.pop("words", None)
 
             # Generate full transcript
             transcript = " ".join(seg["text"] for seg in segments)
