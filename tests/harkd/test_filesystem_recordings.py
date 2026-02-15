@@ -131,10 +131,9 @@ async def test_list_recordings_multiple(temp_storage):
     all_recordings = await temp_storage.list()
     assert len(all_recordings) == 3
 
-    # Should be sorted by created_at descending (newest first)
-    assert all_recordings[0].id == "rec-3"
-    assert all_recordings[1].id == "rec-2"
-    assert all_recordings[2].id == "rec-1"
+    # Storage no longer sorts — just verify all recordings are returned
+    returned_ids = {r.id for r in all_recordings}
+    assert returned_ids == {"rec-1", "rec-2", "rec-3"}
 
 
 @pytest.mark.asyncio

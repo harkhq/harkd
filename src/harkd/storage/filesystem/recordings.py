@@ -121,9 +121,6 @@ class FilesystemRecordingStorage(RecordingStorage):
             if status:
                 recordings = [r for r in recordings if r.status == status]
 
-            # Sort by created_at descending (newest first)
-            recordings.sort(key=lambda r: r.created_at, reverse=True)
-
             # Apply pagination (limit=0 means return all)
             if limit > 0:
                 return recordings[offset : offset + limit]

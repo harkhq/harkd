@@ -1,7 +1,8 @@
 """REST API routes for recordings."""
 
 import logging
-from typing import Annotated
+from datetime import datetime
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -92,6 +93,13 @@ async def list_recordings(
         Query(alias="status", description="Filter by status"),
     ] = None,
     search: Annotated[str | None, Query(description="Search in title/transcript")] = None,
+    sort: Annotated[Literal["asc", "desc"], Query(description="Sort by date")] = "desc",
+    created_after: Annotated[
+        datetime | None, Query(description="Filter: created at or after (ISO 8601)")
+    ] = None,
+    created_before: Annotated[
+        datetime | None, Query(description="Filter: created at or before (ISO 8601)")
+    ] = None,
 ) -> RecordingListResponse:
     """List recordings with filtering and pagination.
 
@@ -106,7 +114,9 @@ async def list_recordings(
         Paginated list of recordings
     """
     logger.debug(
-        f"GET /recordings - limit={limit}, offset={offset}, status={status_filter}, search={search}"
+        f"GET /recordings - limit={limit}, offset={offset}, status={status_filter}, "
+        f"search={search}, sort={sort}, created_after={created_after}, "
+        f"created_before={created_before}"
     )
 
     result = await service.list_recordings(
@@ -114,6 +124,9 @@ async def list_recordings(
         offset=offset,
         status=status_filter,
         search=search,
+        sort=sort,
+        created_after=created_after,
+        created_before=created_before,
     )
 
     logger.debug(f"Returning {len(result.recordings)} recordings (total={result.total})")

@@ -375,6 +375,9 @@ class RecordingService:
         offset: int = 0,
         status: RecordingStatus | None = None,
         search: str | None = None,
+        sort: str = "desc",
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
     ) -> RecordingListResponse:
         """List recordings with filtering.
 
@@ -404,6 +407,15 @@ class RecordingService:
                 if search_lower in r.title.lower()
                 or (r.transcript and search_lower in r.transcript.lower())
             ]
+
+        # Apply date range filters
+        if created_after:
+            all_recordings = [r for r in all_recordings if r.created_at >= created_after]
+        if created_before:
+            all_recordings = [r for r in all_recordings if r.created_at <= created_before]
+
+        # Sort by created_at
+        all_recordings.sort(key=lambda r: r.created_at, reverse=(sort == "desc"))
 
         total = len(all_recordings)
 

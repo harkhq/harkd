@@ -1,6 +1,6 @@
 """Tests for recordings API routes."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -560,6 +560,139 @@ class TestListRecordings:
         data = response.json()
         assert len(data["recordings"]) == 4, "Should have all 4 recordings without filter"
 
+    def test_list_recordings_sort_asc(self, client, settings):
+        """Test sort=asc returns oldest first, default returns newest first."""
+        base = datetime(2026, 1, 10, 12, 0, 0)
+        for i in range(3):
+            create_recording_in_storage(
+                settings,
+                StorageRecording(
+                    id=f"rec-{i}",
+                    status=RecordingStatus.COMPLETE.value,
+                    created_at=base + timedelta(hours=i),
+                    title=f"Recording {i}",
+                    duration=10.0,
+                    settings={},
+                ),
+            )
+
+        # Default (desc) — newest first
+        response = client.get("/api/v1/recordings")
+        assert response.status_code == 200
+        ids_desc = [r["id"] for r in response.json()["recordings"]]
+        assert ids_desc == ["rec-2", "rec-1", "rec-0"]
+
+        # Explicit asc — oldest first
+        response = client.get("/api/v1/recordings?sort=asc")
+        assert response.status_code == 200
+        ids_asc = [r["id"] for r in response.json()["recordings"]]
+        assert ids_asc == ["rec-0", "rec-1", "rec-2"]
+
+    def test_list_recordings_filter_created_after(self, client, settings):
+        """Test created_after returns only recordings at or after the cutoff."""
+        base = datetime(2026, 1, 10, 12, 0, 0)
+        for i in range(3):
+            create_recording_in_storage(
+                settings,
+                StorageRecording(
+                    id=f"rec-{i}",
+                    status=RecordingStatus.COMPLETE.value,
+                    created_at=base + timedelta(hours=i),
+                    title=f"Recording {i}",
+                    duration=10.0,
+                    settings={},
+                ),
+            )
+
+        cutoff = (base + timedelta(hours=1)).isoformat()
+        response = client.get(f"/api/v1/recordings?created_after={cutoff}")
+        assert response.status_code == 200
+        ids = {r["id"] for r in response.json()["recordings"]}
+        assert ids == {"rec-1", "rec-2"}
+
+    def test_list_recordings_filter_created_before(self, client, settings):
+        """Test created_before returns only recordings at or before the cutoff."""
+        base = datetime(2026, 1, 10, 12, 0, 0)
+        for i in range(3):
+            create_recording_in_storage(
+                settings,
+                StorageRecording(
+                    id=f"rec-{i}",
+                    status=RecordingStatus.COMPLETE.value,
+                    created_at=base + timedelta(hours=i),
+                    title=f"Recording {i}",
+                    duration=10.0,
+                    settings={},
+                ),
+            )
+
+        cutoff = (base + timedelta(hours=1)).isoformat()
+        response = client.get(f"/api/v1/recordings?created_before={cutoff}")
+        assert response.status_code == 200
+        ids = {r["id"] for r in response.json()["recordings"]}
+        assert ids == {"rec-0", "rec-1"}
+
+    def test_list_recordings_date_range(self, client, settings):
+        """Test combining created_after and created_before filters."""
+        base = datetime(2026, 1, 10, 12, 0, 0)
+        for i in range(5):
+            create_recording_in_storage(
+                settings,
+                StorageRecording(
+                    id=f"rec-{i}",
+                    status=RecordingStatus.COMPLETE.value,
+                    created_at=base + timedelta(hours=i),
+                    title=f"Recording {i}",
+                    duration=10.0,
+                    settings={},
+                ),
+            )
+
+        after = (base + timedelta(hours=1)).isoformat()
+        before = (base + timedelta(hours=3)).isoformat()
+        response = client.get(
+            f"/api/v1/recordings?created_after={after}&created_before={before}"
+        )
+        assert response.status_code == 200
+        ids = {r["id"] for r in response.json()["recordings"]}
+        assert ids == {"rec-1", "rec-2", "rec-3"}
+
+    def test_list_recordings_combined_filters(self, client, settings):
+        """Test combining status + search + date range + sort."""
+        base = datetime(2026, 1, 10, 12, 0, 0)
+        recordings = [
+            ("rec-0", "Team standup", "complete", base),
+            ("rec-1", "Team retro", "complete", base + timedelta(hours=1)),
+            ("rec-2", "Team standup", "processing", base + timedelta(hours=2)),
+            ("rec-3", "Design review", "complete", base + timedelta(hours=3)),
+            ("rec-4", "Team standup", "complete", base + timedelta(hours=4)),
+        ]
+        for rec_id, title, status, created_at in recordings:
+            create_recording_in_storage(
+                settings,
+                StorageRecording(
+                    id=rec_id,
+                    status=status,
+                    created_at=created_at,
+                    title=title,
+                    duration=10.0,
+                    settings={},
+                ),
+            )
+
+        # Complete + "standup" + date range + asc
+        after = (base + timedelta(hours=1)).isoformat()
+        before = (base + timedelta(hours=4)).isoformat()
+        response = client.get(
+            f"/api/v1/recordings?status=complete&search=standup"
+            f"&created_after={after}&created_before={before}&sort=asc"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        ids = [r["id"] for r in data["recordings"]]
+        # rec-0: before range, rec-2: processing, rec-3: no match
+        assert ids == ["rec-4"]
+
 
 class TestUpdateRecording:
     """Tests for PATCH /api/v1/recordings/{id}."""
@@ -703,15 +836,57 @@ class TestUpdateRecording:
         )
         create_recording_in_storage(settings, recording)
 
-        # Try to update
+        # Try to update speakers — should be rejected
         response = client.patch(
             "/api/v1/recordings/test-123",
-            json={"title": "New Title"},
+            json={"speakers": {"SPEAKER_01": "Alice"}},
         )
 
         assert response.status_code == 409
         error = response.json()
         assert error["detail"]["error"]["code"] == "INVALID_STATE"
+
+    def test_update_title_during_processing(self, client, settings):
+        """Test that title can be updated on a processing recording."""
+        recording = StorageRecording(
+            id="test-123",
+            status=RecordingStatus.PROCESSING.value,
+            created_at=datetime.now(UTC),
+            title="Untitled Recording",
+            duration=10.0,
+            settings={},
+        )
+        create_recording_in_storage(settings, recording)
+
+        response = client.patch(
+            "/api/v1/recordings/test-123",
+            json={"title": "Weekly Standup"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["title"] == "Weekly Standup"
+
+    def test_update_title_during_recording(self, client, settings):
+        """Test that title can be updated on a recording-state recording."""
+        recording = StorageRecording(
+            id="test-123",
+            status=RecordingStatus.RECORDING.value,
+            created_at=datetime.now(UTC),
+            title="Untitled Recording",
+            duration=0.0,
+            settings={},
+        )
+        create_recording_in_storage(settings, recording)
+
+        response = client.patch(
+            "/api/v1/recordings/test-123",
+            json={"title": "My Meeting"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["title"] == "My Meeting"
 
 
 class TestDeleteRecording:
