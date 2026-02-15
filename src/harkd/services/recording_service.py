@@ -859,8 +859,8 @@ class RecordingService:
                 storage_recording.title = generate_title(transcript)
                 logger.debug(f"[{recording_id}] Generated title: {storage_recording.title}")
 
-            # Stage: Meeting minutes (if LLM enabled)
-            if self.config.llm.enabled:
+            # Stage: Meeting minutes (if LLM enabled and transcript non-empty)
+            if self.config.llm.enabled and transcript.strip():
                 storage_recording.processing_stage = "meeting_minutes"
                 storage_recording.processing_progress = 0.8
                 await self.storage.update(storage_recording)
