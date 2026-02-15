@@ -2,9 +2,6 @@
 
 import uvicorn
 
-from harkd.api.app import create_app
-from harkd.api.routes.settings import router as settings_router
-from harkd.api.routes.voice_profiles import router as voice_profiles_router
 from harkd.config import get_settings
 
 __all__ = ["run_server"]
@@ -51,19 +48,15 @@ def run_server(
     # Validate configuration before starting
     _validate_settings(settings)
 
-    # Create app with all routes
-    app = create_app(settings)
-    app.include_router(settings_router)
-    app.include_router(voice_profiles_router)
-
     # Use provided args or fall back to settings
     server_host = host or settings.server.host
     server_port = port or settings.server.port
     server_reload = reload if reload is not None else settings.server.reload
 
-    # Run server
+    # Run server — pass import string so uvicorn can reload the module
     uvicorn.run(
-        app,
+        "harkd.api.app:create_app",
+        factory=True,
         host=server_host,
         port=server_port,
         reload=server_reload,
