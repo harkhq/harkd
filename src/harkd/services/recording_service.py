@@ -75,6 +75,7 @@ class RecordingService:
         self.config = config
         self.recording_state = recording_state or get_recording_state()
         self._processing_tasks: dict[str, asyncio.Task] = {}
+        self._recorder: AudioRecorder | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._audio_level: float = 0.0
         self._last_audio_level_write: float = 0.0
@@ -149,6 +150,9 @@ class RecordingService:
             # Start recording
             recorder.start()
 
+            # Store recorder reference so stop_recording() can stop it
+            self._recorder = recorder
+
             # Update state - if this throws, recorder.stop() is called in finally
             await self.recording_state.start(recording_id)
 
@@ -157,6 +161,7 @@ class RecordingService:
             if recorder is not None:
                 with contextlib.suppress(Exception):
                     recorder.stop()
+            self._recorder = None
             logger.error(f"Failed to start recording {recording_id}: {e}", exc_info=True)
             # Clean up metadata
             await self.storage.delete(recording_id)
@@ -241,7 +246,12 @@ class RecordingService:
                 expected_state=RecordingStatus.RECORDING.value,
             )
 
-        # Get recorder from state and stop it
+        # Stop the audio recorder
+        if self._recorder is not None:
+            self._recorder.stop()
+            self._recorder = None
+
+        # Update recording state
         try:
             active_id, start_time = await self.recording_state.stop()
             if active_id != recording_id:
@@ -313,7 +323,11 @@ class RecordingService:
         status = storage_recording.status
 
         if status == RecordingStatus.RECORDING.value:
-            # Stop active recording
+            # Stop the audio recorder
+            if self._recorder is not None:
+                self._recorder.stop()
+                self._recorder = None
+            # Clear recording state
             try:
                 await self.recording_state.cancel()
             except NoActiveRecordingError:
