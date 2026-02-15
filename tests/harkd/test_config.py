@@ -52,8 +52,7 @@ def test_cors_settings_defaults():
     """Test CorsSettings with defaults."""
     settings = CorsSettings()
     assert settings.enabled is True
-    assert "http://localhost:5173" in settings.origins
-    assert "moz-extension://*" in settings.origins
+    assert settings.origins == ["*"]
     assert settings.allow_credentials is True
 
 

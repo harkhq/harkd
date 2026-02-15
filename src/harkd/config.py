@@ -33,11 +33,7 @@ class CorsSettings(BaseSettings):
 
     enabled: bool = True
     origins: list[str] = Field(
-        default_factory=lambda: [
-            "http://localhost:5173",  # Vite dev
-            "http://localhost:3000",  # Common dev port
-            "moz-extension://*",  # Firefox extension
-        ]
+        default_factory=lambda: ["*"]
     )
     allow_credentials: bool = True
     allow_methods: list[str] = Field(default_factory=lambda: ["*"])
