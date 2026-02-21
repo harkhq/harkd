@@ -72,8 +72,9 @@ class KoyebInfraProvider(InfraProvider):
                 )
 
             # Create new service
+            app_id = await self._ensure_app_exists(client)
             logger.info("[koyeb] Creating new service %s", self._app_name)
-            service_spec = self._build_service_spec(config)
+            service_spec = self._build_service_spec(config, app_id)
             resp = await client.post(f"{_KOYEB_API}/services", json=service_spec)
             resp.raise_for_status()
             data = resp.json()
@@ -145,6 +146,7 @@ class KoyebInfraProvider(InfraProvider):
         return httpx.AsyncClient(
             headers={"Authorization": f"Bearer {self._api_token}"},
             timeout=30.0,
+            event_hooks={"response": [self._log_error_response]},
         )
 
     async def _find_service(self, client: httpx.AsyncClient) -> dict | None:
@@ -160,6 +162,18 @@ class KoyebInfraProvider(InfraProvider):
         )
         resp.raise_for_status()
         return resp.json().get("services", [])
+
+    async def _ensure_app_exists(self, client: httpx.AsyncClient) -> str:
+        """Create the Koyeb app if it doesn't already exist. Returns the app ID."""
+        resp = await client.get(f"{_KOYEB_API}/apps", params={"name": self._app_name, "limit": "1"})
+        resp.raise_for_status()
+        apps = resp.json().get("apps", [])
+        if apps:
+            return apps[0]["id"]
+        logger.info("[koyeb] Creating app %s", self._app_name)
+        resp = await client.post(f"{_KOYEB_API}/apps", json={"name": self._app_name})
+        resp.raise_for_status()
+        return resp.json()["app"]["id"]
 
     async def _wait_for_healthy(
         self, client: httpx.AsyncClient, service_id: str, timeout: int = 300
@@ -179,7 +193,7 @@ class KoyebInfraProvider(InfraProvider):
             await asyncio.sleep(5)
         raise TimeoutError(f"Koyeb service {service_id} did not become healthy within {timeout}s")
 
-    def _build_service_spec(self, config: InfraProviderConfig) -> dict:
+    def _build_service_spec(self, config: InfraProviderConfig, app_id: str) -> dict:
         env_vars = [
             {"key": "HARKD_WORKER_API_KEY", "value": config.worker_api_key},
             {"key": "HARKD_WORKER_MODEL", "value": config.worker_model},
@@ -190,6 +204,7 @@ class KoyebInfraProvider(InfraProvider):
             env_vars.append({"key": key, "value": value})
 
         return {
+            "app_id": app_id,
             "definition": {
                 "name": self._app_name,
                 "type": "WEB",
@@ -197,7 +212,7 @@ class KoyebInfraProvider(InfraProvider):
                 "instance_types": [{"type": self._instance_type}],
                 "regions": [self._region],
                 "env": env_vars,
-                "scaling": {"min": 0, "max": 1},
+                "scalings": [{"min": 1, "max": 1}],
                 "ports": [{"port": 8000, "protocol": "http"}],
                 "routes": [{"path": "/", "port": 8000}],
                 "health_checks": [
@@ -208,7 +223,7 @@ class KoyebInfraProvider(InfraProvider):
                         "timeout": 10,
                     }
                 ],
-            }
+            },
         }
 
     @staticmethod

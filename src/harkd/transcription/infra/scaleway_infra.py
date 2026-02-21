@@ -182,6 +182,7 @@ class ScalewayInfraProvider(InfraProvider):
         return httpx.AsyncClient(
             headers={"X-Auth-Token": self._secret_key},
             timeout=30.0,
+            event_hooks={"response": [self._log_error_response]},
         )
 
     async def _find_instance(self, client: httpx.AsyncClient) -> dict | None:

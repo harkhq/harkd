@@ -145,7 +145,10 @@ class DataCrunchInfraProvider(InfraProvider):
             return results
 
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=30.0)
+        return httpx.AsyncClient(
+            timeout=30.0,
+            event_hooks={"response": [self._log_error_response]},
+        )
 
     async def _ensure_token(self, client: httpx.AsyncClient) -> None:
         if self._access_token:

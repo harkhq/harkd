@@ -1,9 +1,16 @@
 """Infrastructure provider abstraction for cloud GPU lifecycle management."""
 
+from __future__ import annotations
+
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+
+import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class InfraState(str, Enum):
@@ -84,3 +91,15 @@ class InfraProvider(ABC):
     def provider_name(self) -> str:
         """Return provider identifier (e.g. 'koyeb', 'scaleway', 'datacrunch')."""
         ...
+
+    async def _log_error_response(self, response: httpx.Response) -> None:
+        """Log response body when an API request returns an error."""
+        if response.is_error:
+            logger.error(
+                "[%s] API error %s %s — %s: %s",
+                self.provider_name(),
+                response.request.method,
+                response.request.url,
+                response.status_code,
+                response.text,
+            )

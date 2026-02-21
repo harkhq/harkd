@@ -40,6 +40,13 @@ class TestKoyebInfraProvider:
         mock_responses = [
             # GET /services?name=hark-worker — no existing
             httpx.Response(200, json={"services": []}),
+            # GET /apps?name=hark-worker — no app yet
+            httpx.Response(200, json={"apps": []}),
+            # POST /apps — create app
+            httpx.Response(
+                200,
+                json={"app": {"id": "app-abc", "name": "hark-worker"}},
+            ),
             # POST /services — create
             httpx.Response(
                 200,
@@ -238,16 +245,37 @@ class TestKoyebInfraProvider:
         assert results[0].instance_id == "svc-1"
 
     def test_build_service_spec(self, provider, infra_config):
-        spec = provider._build_service_spec(infra_config)
+        spec = provider._build_service_spec(infra_config, app_id="app-abc")
+        assert spec["app_id"] == "app-abc"
         defn = spec["definition"]
         assert defn["docker"]["image"] == "test:latest"
         assert defn["instance_types"][0]["type"] == "gpu-test"
         assert defn["regions"] == ["fra"]
-        assert defn["scaling"] == {"min": 0, "max": 1}
+        assert defn["scalings"] == [{"min": 1, "max": 1}]
         env_keys = [e["key"] for e in defn["env"]]
         assert "HARKD_WORKER_API_KEY" in env_keys
         assert "HARKD_WORKER_MODEL" in env_keys
         assert "HARKD_HF_TOKEN" in env_keys
+
+    @pytest.mark.asyncio
+    async def test_ensure_app_exists_already_exists(self, provider):
+        """When the app already exists, no POST /apps is made."""
+        requests_made = []
+
+        async def mock_handler(request):
+            requests_made.append((request.method, str(request.url)))
+            return httpx.Response(
+                200,
+                json={"apps": [{"id": "app-abc", "name": "hark-worker"}]},
+            )
+
+        transport = httpx.MockTransport(mock_handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            app_id = await provider._ensure_app_exists(client)
+
+        assert app_id == "app-abc"
+        assert len(requests_made) == 1
+        assert requests_made[0][0] == "GET"
 
     def test_map_status(self):
         assert KoyebInfraProvider._map_status("HEALTHY") == InfraState.RUNNING
