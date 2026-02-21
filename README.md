@@ -131,6 +131,36 @@ HARKD_LLM__BASE_URL=http://localhost:11434
 HARKD_HF_TOKEN=hf_xxxxxxxxxxxxx
 ```
 
+### Transcription Backends
+
+By default harkd transcribes locally. To offload to a GPU server, deploy the worker container and point harkd at it.
+
+```bash
+# Build and push the worker image
+docker build -f worker/Dockerfile -t ghcr.io/<you>/harkd/worker .
+docker push ghcr.io/<you>/harkd/worker
+```
+
+| Backend | `backend:` | Provider | How it works |
+|---|---|---|---|
+| **Local** | `local` | — | Runs WhisperX as a subprocess on your machine. No config needed. |
+| **Koyeb** | `koyeb` | [Koyeb](https://koyeb.com) | Sync HTTP POST. Requires `koyeb.token` and `endpoint_url`. |
+| **Scaleway** | `scaleway` | [Scaleway](https://scaleway.com) | Sync HTTP POST. Also works as a generic backend for any self-hosted worker. |
+| **Verda** | `verda` | [DataCrunch](https://datacrunch.io) | Async job submission + polling. Optionally uses S3 for file transfer. |
+
+All remote backends use the same worker image. Set `fallback_to_local: true` to fall back automatically on remote failure.
+
+```yaml
+# Example: Koyeb backend
+transcription:
+  backend: koyeb
+  endpoint_url: https://your-worker.koyeb.app
+  worker_api_key: your-shared-secret  # must match HARKD_WORKER_API_KEY on the worker
+  fallback_to_local: true
+  koyeb:
+    token: your-koyeb-api-token
+```
+
 ### Speaker Diarization
 
 Diarization requires a HuggingFace token for [pyannote](https://github.com/pyannote/pyannote-audio) models:
