@@ -27,7 +27,7 @@ def detect_batch_size() -> int:
         page_count = os.sysconf("SC_PHYS_PAGES")
         total_gb = (page_size * page_count) / (1024**3)
         batch_size = min(32, max(1, int(total_gb // 2)))
-    except (ValueError, OSError):
+    except (AttributeError, ValueError, OSError):
         batch_size = 16
     logger.debug("Auto-detected batch size: %d", batch_size)
     return batch_size
