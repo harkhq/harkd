@@ -490,7 +490,12 @@ class TestWriterThreadDrainsQueue:
         # Give interleave + writer threads time to process
         time.sleep(0.5)
 
-        assert sf_instance.write.call_count == 3
+        # The interleave thread accumulates all available samples and writes
+        # them as one stereo chunk, so check total samples written rather than
+        # exact call count.
+        assert sf_instance.write.call_count >= 1
+        total_frames = sum(call.args[0].shape[0] for call in sf_instance.write.call_args_list)
+        assert total_frames == 3 * 1024
 
 
 class TestPulseSourceEnvVar:
@@ -812,3 +817,237 @@ class TestLevelCallbackReturnsNativeFloat:
 
         # This would raise TypeError if level is numpy.float32
         json.dumps({"mic_level": mic_levels[0], "speaker_level": speaker_levels[0]})
+
+
+class TestMicGain:
+    """Tests for mic_gain multiplier in the mic callback."""
+
+    def test_gain_amplifies_audio(self, temp_output):
+        """Test that mic_gain > 1.0 amplifies audio data."""
+        recorder = AudioRecorder(output_path=temp_output, mic_gain=3.0)
+
+        audio_data = np.full((1024, 1), 0.1, dtype=np.float32)
+        recorder._mic_dual_callback(audio_data, 1024, {}, MagicMock())
+
+        assert len(recorder._mic_buffer) == 1
+        buffered = recorder._mic_buffer[0]
+        # 0.1 * 3.0 = 0.3
+        np.testing.assert_allclose(buffered, 0.3, atol=1e-6)
+
+    def test_gain_clips_at_boundaries(self, temp_output):
+        """Test that gain-amplified audio is clipped to [-1.0, 1.0]."""
+        recorder = AudioRecorder(output_path=temp_output, mic_gain=5.0)
+
+        audio_data = np.full((1024, 1), 0.5, dtype=np.float32)
+        recorder._mic_dual_callback(audio_data, 1024, {}, MagicMock())
+
+        assert len(recorder._mic_buffer) == 1
+        buffered = recorder._mic_buffer[0]
+        # 0.5 * 5.0 = 2.5, should be clipped to 1.0
+        np.testing.assert_allclose(buffered, 1.0, atol=1e-6)
+
+    def test_gain_clips_negative_values(self, temp_output):
+        """Test that negative values are also clipped."""
+        recorder = AudioRecorder(output_path=temp_output, mic_gain=5.0)
+
+        audio_data = np.full((1024, 1), -0.5, dtype=np.float32)
+        recorder._mic_dual_callback(audio_data, 1024, {}, MagicMock())
+
+        buffered = recorder._mic_buffer[0]
+        # -0.5 * 5.0 = -2.5, should be clipped to -1.0
+        np.testing.assert_allclose(buffered, -1.0, atol=1e-6)
+
+    def test_gain_does_not_affect_muted_mic(self, temp_output):
+        """Test that gain is not applied when mic is muted."""
+        recorder = AudioRecorder(output_path=temp_output, mic_enabled=False, mic_gain=5.0)
+
+        audio_data = np.full((1024, 1), 0.5, dtype=np.float32)
+        recorder._mic_dual_callback(audio_data, 1024, {}, MagicMock())
+
+        buffered = recorder._mic_buffer[0]
+        # Muted: should be all zeros regardless of gain
+        np.testing.assert_array_equal(buffered, np.zeros_like(buffered))
+
+    def test_gain_does_not_affect_speaker(self, temp_output):
+        """Test that mic_gain does not affect the speaker callback."""
+        recorder = AudioRecorder(output_path=temp_output, mic_gain=5.0)
+
+        audio_data = np.full((1024, 1), 0.1, dtype=np.float32)
+        recorder._speaker_dual_callback(audio_data, 1024, {}, MagicMock())
+
+        buffered = recorder._speaker_buffer[0]
+        # Speaker should be unchanged (gain only applies to mic)
+        np.testing.assert_allclose(buffered, 0.1, atol=1e-6)
+
+    def test_gain_one_is_passthrough(self, temp_output):
+        """Test that mic_gain=1.0 passes audio through unchanged."""
+        recorder = AudioRecorder(output_path=temp_output, mic_gain=1.0)
+
+        audio_data = np.full((1024, 1), 0.3, dtype=np.float32)
+        recorder._mic_dual_callback(audio_data, 1024, {}, MagicMock())
+
+        buffered = recorder._mic_buffer[0]
+        np.testing.assert_allclose(buffered, 0.3, atol=1e-6)
+
+    def test_gain_affects_level_reporting(self, temp_output):
+        """Test that mic_level reflects the gained audio, not raw input."""
+        recorder_no_gain = AudioRecorder(output_path=temp_output, mic_gain=1.0)
+        recorder_with_gain = AudioRecorder(output_path=temp_output, mic_gain=3.0)
+
+        audio_data = np.full((1024, 1), 0.1, dtype=np.float32)
+        recorder_no_gain._mic_dual_callback(audio_data, 1024, {}, MagicMock())
+        recorder_with_gain._mic_dual_callback(audio_data, 1024, {}, MagicMock())
+
+        # Level with gain should be higher
+        assert recorder_with_gain.mic_level > recorder_no_gain.mic_level
+
+    def test_default_gain_is_one(self, temp_output):
+        """Test that default mic_gain is 1.0."""
+        recorder = AudioRecorder(output_path=temp_output)
+        assert recorder.mic_gain == 1.0
+
+
+class TestInterleaveNoDataLoss:
+    """Regression: 1:1 chunk pairing lost audio when chunk sizes differed.
+
+    When mic and speaker streams produce different-sized chunks (common when
+    the speaker uses a different native sample rate that gets resampled), the
+    old interleave logic paired chunks 1:1 and truncated both to min_len.
+    This silently discarded excess samples. Over long recordings, the
+    accumulated loss caused progressive time compression — the beginning
+    sounded normal but later sections played too fast.
+
+    The fix accumulates samples from both streams and pairs them by sample
+    count, carrying over any excess to the next iteration.
+    """
+
+    @patch("harkd.audio.recorder.find_loopback_device")
+    @patch("harkd.audio.recorder.find_microphone")
+    @patch("harkd.audio.recorder.sd.InputStream")
+    @patch("harkd.audio.recorder.sf.SoundFile")
+    def test_mismatched_chunk_sizes_no_data_loss(
+        self, mock_soundfile, mock_stream, mock_find_mic, mock_find_loopback, temp_output
+    ):
+        """All samples must be written even when mic and speaker chunks differ in size."""
+        mock_find_mic.return_value = AudioSourceInfo(
+            device_index=0,
+            name="Mic",
+            channels=1,
+            sample_rate=16000,
+            is_loopback=False,
+        )
+        mock_find_loopback.return_value = AudioSourceInfo(
+            device_index=1,
+            name="Monitor",
+            channels=1,
+            sample_rate=16000,  # same rate, so no resampling complication
+            is_loopback=True,
+        )
+        recorder = AudioRecorder(output_path=temp_output, sample_rate=16000)
+        recorder.start()
+
+        sf_instance = mock_soundfile.return_value
+
+        # Simulate mismatched chunk sizes: mic sends 1024, speaker sends 512
+        # With the old 1:1 pairing, mic would be truncated to 512 per pair,
+        # losing 512 samples per iteration.
+        mic_audio = np.ones((1024, 1), dtype=np.float32) * 0.1
+        speaker_audio = np.ones((512, 1), dtype=np.float32) * 0.2
+
+        for _ in range(10):
+            recorder._mic_dual_callback(mic_audio, 1024, {}, MagicMock())
+            recorder._speaker_dual_callback(speaker_audio, 512, {}, MagicMock())
+
+        time.sleep(0.5)
+
+        # Total mic samples: 10 * 1024 = 10240
+        # Total speaker samples: 10 * 512 = 5120
+        # Only 5120 paired samples can be written (limited by speaker)
+        # The remaining 5120 mic samples stay in the accumulator
+        total_frames = sum(call.args[0].shape[0] for call in sf_instance.write.call_args_list)
+        assert total_frames == 5120, (
+            f"Expected 5120 paired frames (limited by smaller stream), got {total_frames}"
+        )
+
+        # Verify stereo: each written frame should have 2 channels
+        for call in sf_instance.write.call_args_list:
+            assert call.args[0].shape[1] == 2
+
+    @patch("harkd.audio.recorder.find_loopback_device")
+    @patch("harkd.audio.recorder.find_microphone")
+    @patch("harkd.audio.recorder.sd.InputStream")
+    @patch("harkd.audio.recorder.sf.SoundFile")
+    def test_equal_chunks_all_data_written(
+        self, mock_soundfile, mock_stream, mock_find_mic, mock_find_loopback, temp_output
+    ):
+        """When chunk sizes match, all samples from both streams must be written."""
+        mock_find_mic.return_value = AudioSourceInfo(
+            device_index=0,
+            name="Mic",
+            channels=1,
+            sample_rate=16000,
+            is_loopback=False,
+        )
+        mock_find_loopback.return_value = AudioSourceInfo(
+            device_index=1,
+            name="Monitor",
+            channels=1,
+            sample_rate=16000,
+            is_loopback=True,
+        )
+        recorder = AudioRecorder(output_path=temp_output, sample_rate=16000)
+        recorder.start()
+
+        sf_instance = mock_soundfile.return_value
+        audio = np.ones((1024, 1), dtype=np.float32) * 0.1
+
+        for _ in range(10):
+            recorder._mic_dual_callback(audio, 1024, {}, MagicMock())
+            recorder._speaker_dual_callback(audio, 1024, {}, MagicMock())
+
+        time.sleep(0.5)
+
+        total_frames = sum(call.args[0].shape[0] for call in sf_instance.write.call_args_list)
+        assert total_frames == 10 * 1024
+
+    @patch("harkd.audio.recorder.find_loopback_device")
+    @patch("harkd.audio.recorder.find_microphone")
+    @patch("harkd.audio.recorder.sd.InputStream")
+    @patch("harkd.audio.recorder.sf.SoundFile")
+    def test_excess_samples_carry_over(
+        self, mock_soundfile, mock_stream, mock_find_mic, mock_find_loopback, temp_output
+    ):
+        """Excess samples from the larger stream must not be discarded."""
+        mock_find_mic.return_value = AudioSourceInfo(
+            device_index=0,
+            name="Mic",
+            channels=1,
+            sample_rate=16000,
+            is_loopback=False,
+        )
+        mock_find_loopback.return_value = AudioSourceInfo(
+            device_index=1,
+            name="Monitor",
+            channels=1,
+            sample_rate=16000,
+            is_loopback=True,
+        )
+        recorder = AudioRecorder(output_path=temp_output, sample_rate=16000)
+        recorder.start()
+
+        sf_instance = mock_soundfile.return_value
+
+        # Send mic=1000, speaker=600, then mic=0, speaker=400
+        # Total: mic=1000, speaker=1000 → should write 1000 paired frames
+        mic1 = np.ones((1000, 1), dtype=np.float32) * 0.1
+        spk1 = np.ones((600, 1), dtype=np.float32) * 0.2
+        recorder._mic_dual_callback(mic1, 1000, {}, MagicMock())
+        recorder._speaker_dual_callback(spk1, 600, {}, MagicMock())
+        time.sleep(0.1)
+
+        spk2 = np.ones((400, 1), dtype=np.float32) * 0.3
+        recorder._speaker_dual_callback(spk2, 400, {}, MagicMock())
+        time.sleep(0.3)
+
+        total_frames = sum(call.args[0].shape[0] for call in sf_instance.write.call_args_list)
+        assert total_frames == 1000

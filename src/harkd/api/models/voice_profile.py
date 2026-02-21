@@ -10,6 +10,12 @@ __all__ = [
     "VoiceProfileDetail",
     "VoiceProfileCreate",
     "VoiceProfileListResponse",
+    "SpeakerSegment",
+    "UnassignedSpeaker",
+    "UnassignedSpeakersResponse",
+    "ProfileClip",
+    "ProfileClipsResponse",
+    "ClipAssignment",
 ]
 
 
@@ -19,6 +25,7 @@ class VoiceEmbedding(BaseModel):
     recording_id: str
     speaker_id: str
     timestamp: datetime
+    vector: list[float] = Field(default_factory=list)
 
 
 class VoiceProfile(BaseModel):
@@ -49,3 +56,52 @@ class VoiceProfileListResponse(BaseModel):
     """List of voice profiles."""
 
     profiles: list[VoiceProfile]
+
+
+class SpeakerSegment(BaseModel):
+    """A playable segment of speech."""
+
+    start: float = Field(..., ge=0)
+    end: float = Field(..., ge=0)
+    text: str
+
+
+class UnassignedSpeaker(BaseModel):
+    """A speaker from a recording not yet assigned to any voice profile."""
+
+    recording_id: str
+    recording_title: str
+    recording_created_at: datetime
+    speaker_label: str
+    segments: list[SpeakerSegment]
+
+
+class UnassignedSpeakersResponse(BaseModel):
+    """List of unassigned speakers across all recordings."""
+
+    speakers: list[UnassignedSpeaker]
+
+
+class ProfileClip(BaseModel):
+    """A clip assigned to a voice profile."""
+
+    recording_id: str
+    recording_title: str
+    recording_created_at: datetime
+    speaker_label: str
+    segments: list[SpeakerSegment]
+
+
+class ProfileClipsResponse(BaseModel):
+    """Clips associated with a voice profile."""
+
+    profile_id: str
+    profile_name: str
+    clips: list[ProfileClip]
+
+
+class ClipAssignment(BaseModel):
+    """Request to assign a speaker clip to a profile."""
+
+    recording_id: str
+    speaker_label: str

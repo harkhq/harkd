@@ -1,5 +1,15 @@
 """API request and response models."""
 
+from harkd.api.models.chat import (
+    ChatMessageResponse,
+    ChatScopeModel,
+    ChatSendRequest,
+    ChatThreadListItem,
+    ChatThreadListResponse,
+    ChatThreadResponse,
+    ChatThreadUpdate,
+    CitationModel,
+)
 from harkd.api.models.error import ErrorDetail, ErrorResponse
 from harkd.api.models.health import HealthResponse
 from harkd.api.models.recording import (
@@ -26,6 +36,15 @@ from harkd.api.models.voice_profile import (
 )
 
 __all__ = [
+    # Chat models
+    "ChatMessageResponse",
+    "ChatScopeModel",
+    "ChatSendRequest",
+    "ChatThreadListItem",
+    "ChatThreadListResponse",
+    "ChatThreadResponse",
+    "ChatThreadUpdate",
+    "CitationModel",
     # Error models
     "ErrorDetail",
     "ErrorResponse",

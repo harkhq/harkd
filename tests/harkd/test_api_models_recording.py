@@ -112,6 +112,7 @@ class TestRecordingSettings:
         assert settings.diarization is True
         assert settings.noise_reduction is True
         assert settings.normalization is True
+        assert settings.mic_gain == 2.0
         assert settings.word_timestamps is False
 
     def test_settings_custom(self):
@@ -171,6 +172,7 @@ class TestRecordingOverrides:
         assert overrides.diarization is None
         assert overrides.noise_reduction is None
         assert overrides.normalization is None
+        assert overrides.mic_gain is None
         assert overrides.word_timestamps is None
 
     def test_overrides_partial(self):
@@ -302,6 +304,26 @@ class TestRecordingUpdate:
         assert update.title == "Updated"
         assert update.speakers is not None
         assert update.speakers["SPEAKER_00"] == "Alice"
+
+    def test_update_tasks(self):
+        """Test updating tasks."""
+        update = RecordingUpdate(tasks=[{"task": "Fix bug", "done": False}])
+        assert update.tasks is not None
+        assert len(update.tasks) == 1
+        assert update.tasks[0]["task"] == "Fix bug"
+        assert update.tasks[0]["done"] is False
+
+    def test_update_decisions(self):
+        """Test updating decisions."""
+        update = RecordingUpdate(decisions=["Use React"])
+        assert update.decisions is not None
+        assert update.decisions == ["Use React"]
+
+    def test_update_tasks_empty_list(self):
+        """Test updating tasks with empty list clears tasks."""
+        update = RecordingUpdate(tasks=[])
+        assert update.tasks is not None
+        assert update.tasks == []
 
 
 class TestRecordingResponse:
@@ -442,6 +464,29 @@ class TestRecordingListItem:
         assert item.duration == 120.5
         assert item.status == RecordingStatus.COMPLETE
         assert len(item.speakers) == 2
+
+    def test_list_item_with_tags(self):
+        """Test creating list item with tags."""
+        item = RecordingListItem(
+            id="rec-123",
+            title="Team standup",
+            created_at=datetime(2026, 1, 15, 10, 30, 0),
+            duration=120.5,
+            status=RecordingStatus.COMPLETE,
+            tags=["standup", "weekly"],
+        )
+        assert item.tags == ["standup", "weekly"]
+
+    def test_list_item_default_tags(self):
+        """Test list item defaults to empty tags."""
+        item = RecordingListItem(
+            id="rec-123",
+            title="Team standup",
+            created_at=datetime(2026, 1, 15, 10, 30, 0),
+            duration=120.5,
+            status=RecordingStatus.COMPLETE,
+        )
+        assert item.tags == []
 
 
 class TestRecordingListResponse:

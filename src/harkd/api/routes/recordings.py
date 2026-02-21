@@ -1,10 +1,15 @@
 """REST API routes for recordings."""
 
+import asyncio
+import io
 import logging
+import struct
+import wave
 from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 
 from harkd.api.deps import get_recording_service
 from harkd.api.models.recording import (
@@ -14,6 +19,7 @@ from harkd.api.models.recording import (
     RecordingResponse,
     RecordingStatus,
     RecordingUpdate,
+    RetryOverrides,
 )
 from harkd.exceptions import (
     InvalidStateError,
@@ -22,6 +28,8 @@ from harkd.exceptions import (
     NoMicrophoneError,
     RecordingInProgressError,
     RecordingNotFoundError,
+    RetryNotAllowedError,
+    VoiceProfileNotFoundError,
 )
 from harkd.services.recording_service import RecordingService
 
@@ -257,6 +265,64 @@ async def stop_active_recording(
         ) from e
 
 
+@router.post(
+    "/{recording_id}/retry",
+    response_model=RecordingResponse,
+    summary="Retry or reprocess recording",
+    description="Re-enqueue a failed or completed recording for processing.",
+)
+async def retry_recording(
+    recording_id: str,
+    service: ServiceDep,
+    overrides: RetryOverrides | None = None,
+) -> RecordingResponse:
+    """Retry a failed or reprocess a completed recording.
+
+    Args:
+        recording_id: Recording ID
+        service: Recording service (injected)
+        overrides: Optional diarization overrides for re-processing
+
+    Returns:
+        Updated recording response with status "processing"
+
+    Raises:
+        HTTPException 404: If recording not found
+        HTTPException 409: If recording is not in error/complete state or already queued
+    """
+    logger.info(f"POST /recordings/{recording_id}/retry (overrides={overrides})")
+
+    try:
+        overrides_dict = overrides.model_dump(exclude_none=True) if overrides else None
+        result = await service.retry_recording(recording_id, overrides=overrides_dict)
+        logger.info(f"Recording {recording_id} retry enqueued")
+        return result
+    except RecordingNotFoundError as e:
+        logger.warning(f"Recording not found: {recording_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": {
+                    "code": e.code,
+                    "message": e.message,
+                    "details": e.details,
+                }
+            },
+        ) from e
+    except RetryNotAllowedError as e:
+        logger.warning(f"Retry not allowed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": {
+                    "code": e.code,
+                    "message": e.message,
+                    "details": e.details,
+                }
+            },
+        ) from e
+
+
 @router.get(
     "/{recording_id}",
     response_model=RecordingResponse,
@@ -356,6 +422,18 @@ async def update_recording(
                 }
             },
         ) from e
+    except VoiceProfileNotFoundError as e:
+        logger.warning(f"Voice profile not found during update: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": {
+                    "code": e.code,
+                    "message": e.message,
+                    "details": e.details,
+                }
+            },
+        ) from e
 
 
 @router.delete(
@@ -395,6 +473,149 @@ async def delete_recording(
                     "code": e.code,
                     "message": e.message,
                     "details": e.details,
+                }
+            },
+        ) from e
+
+
+@router.get(
+    "/{recording_id}/audio/clip",
+    response_class=Response,
+    summary="Get audio clip",
+    description="Extract a time-range clip from a recording's audio file.",
+)
+async def get_audio_clip(
+    recording_id: str,
+    service: ServiceDep,
+    start: float = Query(..., ge=0, description="Start time in seconds"),
+    end: float = Query(..., gt=0, description="End time in seconds"),
+) -> Response:
+    """Extract an audio clip from a recording.
+
+    Args:
+        recording_id: Recording ID
+        service: Recording service (injected)
+        start: Start time in seconds
+        end: End time in seconds
+
+    Returns:
+        WAV audio response
+
+    Raises:
+        HTTPException 404: If recording or audio file not found
+        HTTPException 422: If start >= end
+    """
+    if end <= start:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": {
+                    "code": "INVALID_RANGE",
+                    "message": "end must be greater than start",
+                }
+            },
+        )
+
+    # Verify recording exists
+    storage_recording = await service.storage.get(recording_id)
+    if storage_recording is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": {
+                    "code": "RECORDING_NOT_FOUND",
+                    "message": f"Recording not found: {recording_id}",
+                }
+            },
+        )
+
+    audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
+    if not await asyncio.to_thread(audio_path.exists):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": {
+                    "code": "AUDIO_NOT_FOUND",
+                    "message": "Audio file not found for this recording",
+                }
+            },
+        )
+
+    def _extract_clip() -> bytes:
+        with wave.open(str(audio_path), "rb") as wf:
+            framerate = wf.getframerate()
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            n_frames = wf.getnframes()
+
+            start_frame = int(start * framerate)
+            end_frame = int(end * framerate)
+
+            # Clamp to file bounds
+            start_frame = min(start_frame, n_frames)
+            end_frame = min(end_frame, n_frames)
+
+            if start_frame >= end_frame:
+                end_frame = start_frame
+
+            wf.setpos(start_frame)
+            frames = wf.readframes(end_frame - start_frame)
+
+        # Downmix stereo to mono (recordings are L=mic, R=speaker)
+        if n_channels == 2 and sampwidth == 2:
+            n_samples = len(frames) // (n_channels * sampwidth)
+            stereo = struct.unpack(f"<{n_samples * 2}h", frames)
+            mono = struct.pack(
+                f"<{n_samples}h",
+                *(
+                    max(-32768, min(32767, (stereo[i] + stereo[i + 1]) // 2))
+                    for i in range(0, len(stereo), 2)
+                ),
+            )
+            frames = mono
+            n_channels = 1
+
+        # Upsample to 48kHz for reliable browser playback.
+        # Browser audio pipelines run at 44.1/48kHz; feeding 16kHz
+        # can cause audible speed/pitch glitches in some browsers.
+        target_rate = 48000
+        if n_channels == 1 and sampwidth == 2 and framerate != target_rate and frames:
+            import numpy as np
+
+            samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+            n_out = int(len(samples) * target_rate / framerate)
+            x_new = np.linspace(0, len(samples) - 1, n_out)
+            upsampled = np.interp(x_new, np.arange(len(samples)), samples)
+            frames = np.clip(upsampled, -32768, 32767).astype(np.int16).tobytes()
+            framerate = target_rate
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as out:
+            out.setnchannels(n_channels)
+            out.setsampwidth(sampwidth)
+            out.setframerate(framerate)
+            out.writeframes(frames)
+
+        return buf.getvalue()
+
+    try:
+        content = await asyncio.to_thread(_extract_clip)
+        return Response(
+            content=content,
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": "inline",
+                "Cache-Control": "no-store",
+            },
+        )
+    except wave.Error as e:
+        logger.error(f"Failed to read audio file for {recording_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": {
+                    "code": "AUDIO_READ_ERROR",
+                    "message": "Failed to read audio file",
                 }
             },
         ) from e

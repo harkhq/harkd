@@ -19,10 +19,15 @@ from harkd.exceptions import (
     NoActiveRecordingError,
     RecordingInProgressError,
     RecordingNotFoundError,
+    RetryNotAllowedError,
+    VoiceProfileNotFoundError,
 )
+from harkd.services.processing_worker import ProcessingWorker
 from harkd.services.recording_service import RecordingService
+from harkd.services.voice_profile_service import VoiceProfileService
 from harkd.state.recording_state import RecordingState
 from harkd.storage.filesystem.recordings import FilesystemRecordingStorage
+from harkd.storage.filesystem.voice_profiles import FilesystemVoiceProfileStorage
 from harkd.storage.models import StorageRecording
 
 
@@ -45,9 +50,17 @@ def config(tmp_path):
 
 
 @pytest.fixture
-def service(storage, config, recording_state):
-    """Create recording service."""
-    return RecordingService(storage=storage, config=config, recording_state=recording_state)
+def worker(storage, config):
+    """Create processing worker."""
+    return ProcessingWorker(storage, config)
+
+
+@pytest.fixture
+def service(storage, config, recording_state, worker):
+    """Create recording service with worker."""
+    return RecordingService(
+        storage=storage, config=config, recording_state=recording_state, worker=worker
+    )
 
 
 @pytest.fixture
@@ -60,8 +73,8 @@ def mock_recorder():
 
 
 @pytest.fixture
-def mock_transcriber():
-    """Mock transcription subprocess."""
+def mock_transcriber(worker):
+    """Mock transcription subprocess on the worker."""
     mock_result = {
         "text": "Hello world",
         "language": "en",
@@ -80,19 +93,10 @@ def mock_transcriber():
         ],
     }
 
-    async def mock_run_subprocess(
-        self,
-        recording_id,
-        audio_path,
-        model_name,
-        language,
-        word_timestamps,
-        diarize=False,
-        hf_token=None,
-    ):
+    async def mock_run_subprocess(self, *args, **kwargs):
         return mock_result
 
-    with patch.object(RecordingService, "_run_transcription_subprocess", mock_run_subprocess):
+    with patch.object(ProcessingWorker, "_run_transcription", mock_run_subprocess):
         yield mock_result
 
 
@@ -246,7 +250,7 @@ class TestStartRecording:
 
     @pytest.mark.asyncio
     async def test_start_recording_custom_daemon_config(
-        self, storage, recording_state, mock_recorder, tmp_path
+        self, storage, recording_state, mock_recorder, tmp_path, worker
     ):
         """Test that custom daemon config is respected."""
         custom_config = HarkdSettings(
@@ -254,7 +258,10 @@ class TestStartRecording:
             recording=RecordingDefaults(model="small", language="fr"),
         )
         svc = RecordingService(
-            storage=storage, config=custom_config, recording_state=recording_state
+            storage=storage,
+            config=custom_config,
+            recording_state=recording_state,
+            worker=worker,
         )
 
         result = await svc.start_recording(RecordingCreate())
@@ -262,6 +269,59 @@ class TestStartRecording:
         stored = await storage.get(result.id)
         assert stored.settings["model"] == "small"
         assert stored.settings["language"] == "fr"
+
+
+class TestMicGainFlow:
+    """Tests for mic_gain flowing through to AudioRecorder."""
+
+    @pytest.mark.asyncio
+    async def test_mic_gain_passed_to_recorder(self, storage, recording_state, tmp_path, worker):
+        """Test that mic_gain from config is passed to AudioRecorder."""
+        custom_config = HarkdSettings(
+            storage=StorageSettings(base_path=tmp_path),
+            recording=RecordingDefaults(mic_gain=3.5),
+        )
+        svc = RecordingService(
+            storage=storage,
+            config=custom_config,
+            recording_state=recording_state,
+            worker=worker,
+        )
+
+        with patch("harkd.services.recording_service.AudioRecorder") as mock_cls:
+            instance = MagicMock()
+            mock_cls.return_value = instance
+
+            await svc.start_recording(RecordingCreate())
+
+            mock_cls.assert_called_once()
+            call_kwargs = mock_cls.call_args[1]
+            assert call_kwargs["mic_gain"] == 3.5
+
+    @pytest.mark.asyncio
+    async def test_mic_gain_override_per_recording(
+        self, storage, recording_state, tmp_path, worker
+    ):
+        """Test that per-recording mic_gain override takes precedence."""
+        custom_config = HarkdSettings(
+            storage=StorageSettings(base_path=tmp_path),
+            recording=RecordingDefaults(mic_gain=2.0),
+        )
+        svc = RecordingService(
+            storage=storage,
+            config=custom_config,
+            recording_state=recording_state,
+            worker=worker,
+        )
+
+        with patch("harkd.services.recording_service.AudioRecorder") as mock_cls:
+            instance = MagicMock()
+            mock_cls.return_value = instance
+
+            await svc.start_recording(RecordingCreate(settings=RecordingOverrides(mic_gain=5.0)))
+
+            call_kwargs = mock_cls.call_args[1]
+            assert call_kwargs["mic_gain"] == 5.0
 
 
 class TestStopRecording:
@@ -312,8 +372,10 @@ class TestStopRecording:
             await service.stop_recording("test-123")
 
     @pytest.mark.asyncio
-    async def test_stop_recording_starts_processing(self, service, mock_recorder, mock_transcriber):
-        """Test that processing task is started."""
+    async def test_stop_recording_enqueues_to_worker(
+        self, service, mock_recorder, mock_transcriber, worker
+    ):
+        """Test that stop_recording enqueues to the worker."""
         # Start recording
         start_result = await service.start_recording(RecordingCreate())
         recording_id = start_result.id
@@ -325,8 +387,8 @@ class TestStopRecording:
         # Stop recording
         await service.stop_recording(recording_id)
 
-        # Verify processing task exists
-        assert recording_id in service._processing_tasks
+        # Verify worker has the recording enqueued
+        assert recording_id in worker._active
 
 
 class TestGetActiveRecording:
@@ -401,7 +463,7 @@ class TestStopActiveRecording:
 
     @pytest.mark.asyncio
     async def test_stop_active_recording_same_behavior_as_stop(
-        self, service, mock_recorder, mock_transcriber, storage
+        self, service, mock_recorder, mock_transcriber, storage, worker
     ):
         """Test that stop_active_recording delegates to stop_recording."""
         # Start recording
@@ -418,7 +480,7 @@ class TestStopActiveRecording:
         # Verify behavior is the same
         assert result_active.status == RecordingStatus.PROCESSING
         assert not service.recording_state.is_recording
-        assert recording_id in service._processing_tasks
+        assert recording_id in worker._active
 
 
 class TestCancelRecording:
@@ -686,6 +748,43 @@ class TestUpdateRecording:
         assert result.segments[0].words[0].speaker == "Alice"
 
     @pytest.mark.asyncio
+    async def test_update_recording_merge_speakers(self, service, storage):
+        """Test merging two speakers into one deduplicates speakers list."""
+        recording = StorageRecording(
+            id="test-merge",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            segments=[
+                {
+                    "start": 0.0,
+                    "end": 5.0,
+                    "text": "Hello",
+                    "speaker": "SPEAKER_00",
+                    "words": [],
+                },
+                {
+                    "start": 5.0,
+                    "end": 10.0,
+                    "text": "World",
+                    "speaker": "SPEAKER_01",
+                    "words": [],
+                },
+            ],
+            speakers=["SPEAKER_00", "SPEAKER_01"],
+            settings={},
+        )
+        await storage.create(recording)
+
+        update = RecordingUpdate(speakers={"SPEAKER_00": "Alice", "SPEAKER_01": "Alice"})
+        result = await service.update_recording("test-merge", update)
+
+        assert result.speakers == ["Alice"]
+        assert result.segments[0].speaker == "Alice"
+        assert result.segments[1].speaker == "Alice"
+
+    @pytest.mark.asyncio
     async def test_update_recording_speakers_not_complete(self, service, storage):
         """Test error when updating speakers on non-complete recording."""
         # Create processing recording
@@ -761,13 +860,104 @@ class TestUpdateRecording:
         with pytest.raises(InvalidStateError):
             await service.update_recording("test-123", update)
 
+    @pytest.mark.asyncio
+    async def test_update_tasks_on_complete_recording(self, service, storage):
+        """Test updating tasks on a complete recording."""
+        recording = StorageRecording(
+            id="test-tasks",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            tasks=[],
+            settings={},
+        )
+        await storage.create(recording)
 
-class TestProcessing:
-    """Tests for background processing."""
+        update = RecordingUpdate(tasks=[{"task": "Review PR", "done": False}])
+        result = await service.update_recording("test-tasks", update)
+
+        assert len(result.tasks) == 1
+        assert result.tasks[0]["task"] == "Review PR"
+
+        stored = await storage.get("test-tasks")
+        assert len(stored.tasks) == 1
+        assert stored.tasks[0]["task"] == "Review PR"
 
     @pytest.mark.asyncio
-    async def test_processing_workflow(self, service, mock_recorder, mock_transcriber, tmp_path):
-        """Test complete processing workflow."""
+    async def test_update_decisions_on_complete_recording(self, service, storage):
+        """Test updating decisions on a complete recording."""
+        recording = StorageRecording(
+            id="test-decisions",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            decisions=[],
+            settings={},
+        )
+        await storage.create(recording)
+
+        update = RecordingUpdate(decisions=["Use React", "Deploy on Friday"])
+        result = await service.update_recording("test-decisions", update)
+
+        assert result.decisions == ["Use React", "Deploy on Friday"]
+
+        stored = await storage.get("test-decisions")
+        assert stored.decisions == ["Use React", "Deploy on Friday"]
+
+    @pytest.mark.asyncio
+    async def test_update_tasks_on_processing_recording(self, service, storage):
+        """Test that tasks can be updated on a processing recording."""
+        recording = StorageRecording(
+            id="test-proc-tasks",
+            status=RecordingStatus.PROCESSING.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=5.0,
+            settings={},
+        )
+        await storage.create(recording)
+
+        update = RecordingUpdate(tasks=[{"task": "Follow up", "done": False}])
+        result = await service.update_recording("test-proc-tasks", update)
+
+        assert len(result.tasks) == 1
+        assert result.tasks[0]["task"] == "Follow up"
+
+    @pytest.mark.asyncio
+    async def test_update_tasks_and_title_together(self, service, storage):
+        """Test updating both tasks and title in a single PATCH."""
+        recording = StorageRecording(
+            id="test-both",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Old Title",
+            duration=10.0,
+            tasks=[],
+            settings={},
+        )
+        await storage.create(recording)
+
+        update = RecordingUpdate(
+            title="New Title",
+            tasks=[{"task": "Ship it", "done": True}],
+        )
+        result = await service.update_recording("test-both", update)
+
+        assert result.title == "New Title"
+        assert len(result.tasks) == 1
+        assert result.tasks[0]["task"] == "Ship it"
+
+
+class TestProcessing:
+    """Tests for background processing via worker."""
+
+    @pytest.mark.asyncio
+    async def test_processing_workflow(
+        self, service, worker, mock_recorder, mock_transcriber, tmp_path
+    ):
+        """Test complete processing workflow through the worker."""
         # Start recording
         result = await service.start_recording(RecordingCreate(title="Test"))
         recording_id = result.id
@@ -776,13 +966,13 @@ class TestProcessing:
         audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
         audio_path.touch()
 
-        # Stop recording
+        # Stop recording (enqueues to worker)
         await service.stop_recording(recording_id)
 
-        # Wait for processing to complete (with timeout)
-        task = service._processing_tasks.get(recording_id)
-        if task:
-            await asyncio.wait_for(task, timeout=5.0)
+        # Start worker and let it process
+        worker.start()
+        await asyncio.sleep(0.5)
+        await worker.shutdown(timeout=5.0)
 
         # Verify final state
         final = await service.get_recording(recording_id)
@@ -792,7 +982,9 @@ class TestProcessing:
         assert len(final.segments) == 1
 
     @pytest.mark.asyncio
-    async def test_processing_generates_title(self, service, mock_recorder, mock_transcriber):
+    async def test_processing_generates_title(
+        self, service, worker, mock_recorder, mock_transcriber
+    ):
         """Test title generation for untitled recordings."""
         # Start recording without title
         result = await service.start_recording(RecordingCreate())
@@ -805,10 +997,10 @@ class TestProcessing:
         # Stop and process
         await service.stop_recording(recording_id)
 
-        # Wait for processing
-        task = service._processing_tasks.get(recording_id)
-        if task:
-            await asyncio.wait_for(task, timeout=5.0)
+        # Run the worker
+        worker.start()
+        await asyncio.sleep(0.5)
+        await worker.shutdown(timeout=5.0)
 
         # Verify title generated
         final = await service.get_recording(recording_id)
@@ -816,7 +1008,9 @@ class TestProcessing:
         assert len(final.title) > 0
 
     @pytest.mark.asyncio
-    async def test_processing_error_sets_error_status(self, service, mock_recorder, storage):
+    async def test_processing_error_sets_error_status(
+        self, service, worker, mock_recorder, storage
+    ):
         """Test that processing failure sets error status and clears processing fields."""
         # Start recording
         result = await service.start_recording(RecordingCreate(title="Test"))
@@ -826,38 +1020,85 @@ class TestProcessing:
         audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
         audio_path.touch()
 
-        # Make transcription subprocess raise an error
+        # Make transcription subprocess raise a permanent error
         async def failing_subprocess(self, *args, **kwargs):
-            raise RuntimeError("Transcription failed")
+            raise RuntimeError("Audio file not found: /missing.wav")
 
         with patch.object(
-            RecordingService,
-            "_run_transcription_subprocess",
+            ProcessingWorker,
+            "_run_transcription",
             failing_subprocess,
         ):
             await service.stop_recording(recording_id)
 
-            # Wait for processing to complete
-            task = service._processing_tasks.get(recording_id)
-            if task:
-                await asyncio.wait_for(task, timeout=5.0)
+            # Run the worker
+            worker.start()
+            await asyncio.sleep(0.5)
+            await worker.shutdown(timeout=5.0)
 
         # Verify error state
         final = await service.get_recording(recording_id)
         assert final.status == RecordingStatus.ERROR
         assert final.processing_stage is None
         assert final.processing_progress is None
+        assert final.retry_count == 1
+        assert final.last_error is not None
+
+
+class TestRetryRecording:
+    """Tests for retry_recording."""
+
+    @pytest.mark.asyncio
+    async def test_retry_recording_success(self, service, worker, storage):
+        """Test retry_recording delegates to worker."""
+        recording = StorageRecording(
+            id="test-retry",
+            status="error",
+            created_at=datetime.now(UTC),
+            title="Failed Recording",
+            duration=10.0,
+            settings={},
+            retry_count=1,
+            last_error="timed out",
+        )
+        await storage.create(recording)
+
+        result = await service.retry_recording("test-retry")
+
+        assert result.status == RecordingStatus.PROCESSING
+        assert "test-retry" in worker._active
+
+    @pytest.mark.asyncio
+    async def test_retry_recording_not_found(self, service):
+        """Test retry_recording raises for nonexistent recording."""
+        with pytest.raises(RecordingNotFoundError):
+            await service.retry_recording("nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_retry_recording_wrong_status(self, service, storage):
+        """Test retry_recording raises for disallowed status."""
+        recording = StorageRecording(
+            id="test-noretry",
+            status="processing",
+            created_at=datetime.now(UTC),
+            title="Processing Recording",
+            duration=10.0,
+            settings={},
+        )
+        await storage.create(recording)
+
+        with pytest.raises(RetryNotAllowedError):
+            await service.retry_recording("test-noretry")
 
 
 class TestConvertTranscriptionResult:
-    """Tests for _convert_transcription_result static method."""
+    """Tests for _convert_transcription_result static method (now on ProcessingWorker)."""
 
     def test_empty_segments(self):
         """Test conversion with empty segments."""
         result_dict = {"segments": [], "language": "en", "language_probability": 0.9}
-        segments, language, confidence, speakers = RecordingService._convert_transcription_result(
-            result_dict
-        )
+        result = ProcessingWorker._convert_transcription_result(result_dict)
+        segments, language, confidence, speakers = result[:4]
 
         assert segments == []
         assert language == "en"
@@ -883,9 +1124,8 @@ class TestConvertTranscriptionResult:
             "language_probability": 0.95,
             "speakers": ["SPEAKER_01"],
         }
-        segments, language, confidence, speakers = RecordingService._convert_transcription_result(
-            result_dict
-        )
+        result = ProcessingWorker._convert_transcription_result(result_dict)
+        segments, language, confidence, speakers = result[:4]
 
         assert len(segments) == 1
         assert segments[0]["text"] == "Hello world"
@@ -902,9 +1142,8 @@ class TestConvertTranscriptionResult:
                 {"start": 0.0, "end": 2.0, "text": "Hello"},
             ],
         }
-        segments, language, confidence, speakers = RecordingService._convert_transcription_result(
-            result_dict
-        )
+        result = ProcessingWorker._convert_transcription_result(result_dict)
+        segments, language, confidence, speakers = result[:4]
 
         assert len(segments) == 1
         assert segments[0]["speaker"] is None
@@ -958,13 +1197,21 @@ class TestDiarizationSubprocess:
     """Tests for diarization parameter passing to subprocess."""
 
     @pytest.mark.asyncio
-    async def test_diarization_params_passed_to_subprocess(self, service, mock_recorder, tmp_path):
+    async def test_diarization_params_passed_to_subprocess(
+        self, storage, recording_state, mock_recorder, tmp_path
+    ):
         """Test that diarize and hf_token are passed to subprocess correctly."""
-        # Set up config with diarization and hf_token
-        service.config = HarkdSettings(
+        custom_config = HarkdSettings(
             storage=StorageSettings(base_path=tmp_path),
             recording=RecordingDefaults(diarization=True),
             hf_token="hf_test_token",
+        )
+        w = ProcessingWorker(storage, custom_config)
+        svc = RecordingService(
+            storage=storage,
+            config=custom_config,
+            recording_state=recording_state,
+            worker=w,
         )
 
         diarized_result = {
@@ -1002,28 +1249,30 @@ class TestDiarizationSubprocess:
             word_timestamps,
             diarize=False,
             hf_token=None,
+            **kwargs,
         ):
             captured_kwargs["diarize"] = diarize
             captured_kwargs["hf_token"] = hf_token
             return diarized_result
 
-        with patch.object(RecordingService, "_run_transcription_subprocess", mock_subprocess):
-            result = await service.start_recording(RecordingCreate())
+        with patch.object(ProcessingWorker, "_run_transcription", mock_subprocess):
+            result = await svc.start_recording(RecordingCreate())
             recording_id = result.id
 
-            audio_path = service.storage.base_path / "recordings" / recording_id / "audio.wav"
+            audio_path = storage.base_path / "recordings" / recording_id / "audio.wav"
             audio_path.touch()
 
-            await service.stop_recording(recording_id)
+            await svc.stop_recording(recording_id)
 
-            task = service._processing_tasks.get(recording_id)
-            if task:
-                await asyncio.wait_for(task, timeout=5.0)
+            # Run worker to process
+            w.start()
+            await asyncio.sleep(0.5)
+            await w.shutdown(timeout=5.0)
 
         assert captured_kwargs["diarize"] is True
         assert captured_kwargs["hf_token"] == "hf_test_token"
 
-        final = await service.get_recording(recording_id)
+        final = await svc.get_recording(recording_id)
         assert final.status == RecordingStatus.COMPLETE
         assert final.speakers == ["SPEAKER_01"]
 
@@ -1041,7 +1290,10 @@ class TestMeetingMinutesIntegration:
             recording=RecordingDefaults(diarization=False),
             llm=LLMSettings(enabled=True, provider="openai", api_key="sk-test"),
         )
-        svc = RecordingService(storage=storage, config=config, recording_state=recording_state)
+        w = ProcessingWorker(storage, config)
+        svc = RecordingService(
+            storage=storage, config=config, recording_state=recording_state, worker=w
+        )
 
         mock_transcription = {
             "text": "We decided to use React",
@@ -1066,7 +1318,7 @@ class TestMeetingMinutesIntegration:
         )
 
         with (
-            patch.object(RecordingService, "_run_transcription_subprocess", mock_subprocess),
+            patch.object(ProcessingWorker, "_run_transcription", mock_subprocess),
             patch("harkd.llm.client.LLMClient") as mock_llm_cls,
         ):
             mock_llm = MagicMock()
@@ -1081,9 +1333,9 @@ class TestMeetingMinutesIntegration:
 
             await svc.stop_recording(recording_id)
 
-            task = svc._processing_tasks.get(recording_id)
-            if task:
-                await asyncio.wait_for(task, timeout=5.0)
+            w.start()
+            await asyncio.sleep(0.5)
+            await w.shutdown(timeout=5.0)
 
         final = await svc.get_recording(recording_id)
         assert final.status == RecordingStatus.COMPLETE
@@ -1102,7 +1354,10 @@ class TestMeetingMinutesIntegration:
             recording=RecordingDefaults(diarization=False),
             llm=LLMSettings(enabled=True, provider="openai", api_key="sk-test"),
         )
-        svc = RecordingService(storage=storage, config=config, recording_state=recording_state)
+        w = ProcessingWorker(storage, config)
+        svc = RecordingService(
+            storage=storage, config=config, recording_state=recording_state, worker=w
+        )
 
         mock_transcription = {
             "text": "Hello world",
@@ -1118,7 +1373,7 @@ class TestMeetingMinutesIntegration:
             return mock_transcription
 
         with (
-            patch.object(RecordingService, "_run_transcription_subprocess", mock_subprocess),
+            patch.object(ProcessingWorker, "_run_transcription", mock_subprocess),
             patch("harkd.llm.client.LLMClient") as mock_llm_cls,
         ):
             mock_llm = MagicMock()
@@ -1135,9 +1390,9 @@ class TestMeetingMinutesIntegration:
 
             await svc.stop_recording(recording_id)
 
-            task = svc._processing_tasks.get(recording_id)
-            if task:
-                await asyncio.wait_for(task, timeout=5.0)
+            w.start()
+            await asyncio.sleep(0.5)
+            await w.shutdown(timeout=5.0)
 
         # Recording should still complete despite LLM failure
         final = await svc.get_recording(recording_id)
@@ -1149,7 +1404,7 @@ class TestMeetingMinutesIntegration:
 
     @pytest.mark.asyncio
     async def test_meeting_minutes_not_called_when_llm_disabled(
-        self, service, mock_recorder, mock_transcriber
+        self, service, worker, mock_recorder, mock_transcriber
     ):
         """Test that meeting minutes are skipped when LLM is disabled."""
         # Default config has LLM disabled
@@ -1163,11 +1418,188 @@ class TestMeetingMinutesIntegration:
 
         await service.stop_recording(recording_id)
 
-        task = service._processing_tasks.get(recording_id)
-        if task:
-            await asyncio.wait_for(task, timeout=5.0)
+        worker.start()
+        await asyncio.sleep(0.5)
+        await worker.shutdown(timeout=5.0)
 
         final = await service.get_recording(recording_id)
         assert final.status == RecordingStatus.COMPLETE
         # No meeting minutes
         assert final.executive_summary == []
+
+
+class TestSpeakerProfileIds:
+    """Tests for speaker_profile_ids in update_recording."""
+
+    @pytest.fixture
+    def service_with_profiles(self, storage, config, recording_state, worker, tmp_path):
+        """Create recording service with voice profile service."""
+        vp_storage = FilesystemVoiceProfileStorage(tmp_path)
+        vp_service = VoiceProfileService(vp_storage)
+        svc = RecordingService(
+            storage=storage,
+            config=config,
+            recording_state=recording_state,
+            worker=worker,
+            voice_profile_service=vp_service,
+        )
+        return svc, vp_service
+
+    @pytest.mark.asyncio
+    async def test_update_speaker_profile_ids_links_existing_profile(
+        self, service_with_profiles, storage
+    ):
+        """Test linking a speaker to an existing voice profile."""
+        svc, vp_service = service_with_profiles
+
+        # Create a voice profile
+        from harkd.api.models.voice_profile import VoiceProfileCreate
+
+        profile = await vp_service.create_profile(VoiceProfileCreate(name="Alice"))
+
+        # Create a completed recording with speaker embeddings
+        recording = StorageRecording(
+            id="test-link",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            segments=[
+                {"start": 0.0, "end": 5.0, "text": "Hello", "speaker": "SPEAKER_00", "words": []},
+            ],
+            speakers=["SPEAKER_00"],
+            speaker_embeddings={"SPEAKER_00": [0.1, 0.2, 0.3]},
+            settings={},
+        )
+        await storage.create(recording)
+
+        # Link speaker to existing profile
+        update = RecordingUpdate(
+            speakers={"SPEAKER_00": "Alice"},
+            speaker_profile_ids={"SPEAKER_00": profile.id},
+        )
+        result = await svc.update_recording("test-link", update)
+
+        # Verify profile was linked
+        assert result.speaker_profiles == {"SPEAKER_00": profile.id}
+
+        # Verify embedding was added to the profile
+        detail = await vp_service.get_profile_detail(profile.id)
+        assert detail.clips == 1
+        assert len(detail.embeddings) == 1
+        assert detail.embeddings[0].vector == [0.1, 0.2, 0.3]
+
+    @pytest.mark.asyncio
+    async def test_update_speaker_profile_ids_invalid_profile_raises(
+        self, service_with_profiles, storage
+    ):
+        """Test that an invalid profile ID raises VoiceProfileNotFoundError."""
+        svc, _ = service_with_profiles
+
+        recording = StorageRecording(
+            id="test-invalid",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            segments=[
+                {"start": 0.0, "end": 5.0, "text": "Hello", "speaker": "SPEAKER_00", "words": []},
+            ],
+            speakers=["SPEAKER_00"],
+            speaker_embeddings={"SPEAKER_00": [0.1, 0.2, 0.3]},
+            settings={},
+        )
+        await storage.create(recording)
+
+        update = RecordingUpdate(
+            speakers={"SPEAKER_00": "Alice"},
+            speaker_profile_ids={"SPEAKER_00": "nonexistent-profile"},
+        )
+        with pytest.raises(VoiceProfileNotFoundError):
+            await svc.update_recording("test-invalid", update)
+
+    @pytest.mark.asyncio
+    async def test_update_speaker_profile_ids_skips_missing_embedding(
+        self, service_with_profiles, storage
+    ):
+        """Test that speakers without embeddings are skipped."""
+        svc, vp_service = service_with_profiles
+
+        from harkd.api.models.voice_profile import VoiceProfileCreate
+
+        profile = await vp_service.create_profile(VoiceProfileCreate(name="Bob"))
+
+        recording = StorageRecording(
+            id="test-skip",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            segments=[
+                {"start": 0.0, "end": 5.0, "text": "Hello", "speaker": "SPEAKER_00", "words": []},
+            ],
+            speakers=["SPEAKER_00"],
+            speaker_embeddings={},  # No embeddings
+            settings={},
+        )
+        await storage.create(recording)
+
+        update = RecordingUpdate(
+            speakers={"SPEAKER_00": "Bob"},
+            speaker_profile_ids={"SPEAKER_00": profile.id},
+        )
+        result = await svc.update_recording("test-skip", update)
+
+        # Profile link skipped (no embedding), so no speaker_profiles set
+        assert result.speaker_profiles is None
+
+        # Profile should have no new embeddings
+        detail = await vp_service.get_profile_detail(profile.id)
+        assert detail.clips == 0
+
+    @pytest.mark.asyncio
+    async def test_update_mixed_explicit_and_create(self, service_with_profiles, storage):
+        """Test explicit profile link + create_voice_profiles coexist."""
+        svc, vp_service = service_with_profiles
+
+        from harkd.api.models.voice_profile import VoiceProfileCreate
+
+        profile = await vp_service.create_profile(VoiceProfileCreate(name="Alice"))
+
+        recording = StorageRecording(
+            id="test-mixed",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            segments=[
+                {"start": 0.0, "end": 5.0, "text": "Hello", "speaker": "SPEAKER_00", "words": []},
+                {"start": 5.0, "end": 10.0, "text": "World", "speaker": "SPEAKER_01", "words": []},
+            ],
+            speakers=["SPEAKER_00", "SPEAKER_01"],
+            speaker_embeddings={
+                "SPEAKER_00": [0.1, 0.2, 0.3],
+                "SPEAKER_01": [0.4, 0.5, 0.6],
+            },
+            settings={},
+        )
+        await storage.create(recording)
+
+        # Link SPEAKER_00 explicitly, create profile for SPEAKER_01
+        update = RecordingUpdate(
+            speakers={"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"},
+            speaker_profile_ids={"SPEAKER_00": profile.id},
+            create_voice_profiles=True,
+        )
+        result = await svc.update_recording("test-mixed", update)
+
+        # Both should have profiles
+        assert result.speaker_profiles is not None
+        assert result.speaker_profiles["SPEAKER_00"] == profile.id
+        assert "SPEAKER_01" in result.speaker_profiles
+        # SPEAKER_01 should have a different profile (auto-created for "Bob")
+        assert result.speaker_profiles["SPEAKER_01"] != profile.id
+
+        # Verify Alice's profile got the embedding
+        detail = await vp_service.get_profile_detail(profile.id)
+        assert detail.clips == 1

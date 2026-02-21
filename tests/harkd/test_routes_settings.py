@@ -59,6 +59,7 @@ def test_get_settings_returns_daemon_defaults(client):
     assert data["noise_reduction"] is True
     assert data["normalization"] is True
     assert data["word_timestamps"] is False
+    assert data["mic_gain"] == 2.0
 
 
 def test_get_settings_reflects_custom_config(custom_client):
@@ -105,6 +106,7 @@ def test_get_settings_response_model(client):
         "diarization",
         "noise_reduction",
         "normalization",
+        "mic_gain",
     ]
     for field in expected_fields:
         assert field in data, f"Missing field: {field}"

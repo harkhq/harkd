@@ -6,6 +6,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from harkd.audio._system import detect_cpu_threads
+
 # Fix for PyTorch 2.6 weights_only default change
 # Must be set before torch is imported
 os.environ.setdefault("TORCH_FORCE_WEIGHTS_ONLY_LOAD", "0")
@@ -62,19 +64,34 @@ class Transcriber:
         device: str = "auto",
         language: str | None = None,
         compute_type: str = "auto",
+        beam_size: int = 3,
+        batch_size: int = 16,
+        vad_onset: float = 0.5,
+        vad_offset: float = 0.363,
+        vad_method: str = "pyannote",
     ):
         """Initialize transcriber.
 
         Args:
-            model_name: Whisper model name (tiny, base, small, medium, large, large-v2, large-v3)
+            model_name: Whisper model name or HuggingFace model path
             device: Device to use ("cpu", "cuda", or "auto")
             language: Language code (e.g., "en") or None for auto-detection
             compute_type: Compute type ("int8", "float16", or "auto")
+            beam_size: Beam size for decoding (1 = greedy)
+            batch_size: Batch size for transcription
+            vad_onset: VAD onset threshold
+            vad_offset: VAD offset threshold
+            vad_method: VAD method ("pyannote" or "silero")
         """
         self.model_name = model_name
         self.device = device
         self.language = language
         self.compute_type = compute_type
+        self.beam_size = beam_size
+        self.batch_size = batch_size
+        self.vad_onset = vad_onset
+        self.vad_offset = vad_offset
+        self.vad_method = vad_method
         self._model = None
         self._model_lock = threading.Lock()
         self._actual_device: str | None = None
@@ -134,12 +151,20 @@ class Transcriber:
                             compute_type = "float16" if device == "cuda" else "int8"
                             logger.debug(f"Auto-detected compute type: {compute_type}")
 
+                        threads = detect_cpu_threads() if device == "cpu" else 4
                         self._model = whisperx.load_model(
                             self.model_name,
                             device=device,
                             compute_type=compute_type,
+                            threads=threads,
+                            asr_options={"beam_size": self.beam_size},
+                            vad_options={
+                                "vad_onset": self.vad_onset,
+                                "vad_offset": self.vad_offset,
+                            },
+                            vad_method=self.vad_method,
                         )
-                        logger.info("WhisperX model loaded successfully")
+                        logger.info("WhisperX model loaded successfully (threads=%d)", threads)
                     except Exception as e:
                         logger.error(f"Failed to load WhisperX model: {e}", exc_info=True)
                         raise
@@ -183,7 +208,9 @@ class Transcriber:
             logger.debug("Running transcription")
             if self._model is None:
                 raise RuntimeError("Model not loaded")
-            result = self._model.transcribe(audio, batch_size=16, language=self.language)
+            result = self._model.transcribe(
+                audio, batch_size=self.batch_size, language=self.language
+            )
             detected_language = result.get("language", "unknown")
             logger.debug(f"Detected language: {detected_language}")
 

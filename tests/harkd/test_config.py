@@ -4,15 +4,24 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import pytest
+from pydantic import ValidationError
 
 from harkd.config import (
     CorsSettings,
+    DataCrunchInfraSettings,
+    FileStorageSettings,
     HarkdSettings,
+    InfraSettings,
+    KoyebInfraSettings,
+    KoyebProviderSettings,
     LLMSettings,
     LoggingSettings,
     RecordingDefaults,
+    ScalewayInfraSettings,
     ServerSettings,
     StorageSettings,
+    TranscriptionSettings,
+    VerdaProviderSettings,
     get_settings,
 )
 
@@ -99,6 +108,7 @@ def test_recording_defaults():
     assert defaults.diarization is True
     assert defaults.noise_reduction is True
     assert defaults.normalization is True
+    assert defaults.mic_gain == 2.0
 
 
 def test_recording_defaults_custom():
@@ -124,6 +134,35 @@ def test_recording_defaults_model_validation():
 
     with pytest.raises(ValueError):
         RecordingDefaults(model="invalid-model")
+
+
+def test_recording_defaults_speaker_match_threshold():
+    """Test RecordingDefaults speaker_match_threshold field."""
+    defaults = RecordingDefaults()
+    assert defaults.speaker_match_threshold == 0.7
+
+    # Custom value
+    defaults = RecordingDefaults(speaker_match_threshold=0.5)
+    assert defaults.speaker_match_threshold == 0.5
+
+    # Validation: out of range
+    with pytest.raises(ValidationError):
+        RecordingDefaults(speaker_match_threshold=-0.1)
+    with pytest.raises(ValidationError):
+        RecordingDefaults(speaker_match_threshold=1.1)
+
+
+def test_recording_defaults_mic_gain_validation():
+    """Test RecordingDefaults mic_gain field validation."""
+    # Custom value
+    defaults = RecordingDefaults(mic_gain=5.0)
+    assert defaults.mic_gain == 5.0
+
+    # Validation: out of range
+    with pytest.raises(ValidationError):
+        RecordingDefaults(mic_gain=0.05)
+    with pytest.raises(ValidationError):
+        RecordingDefaults(mic_gain=10.1)
 
 
 def test_recording_defaults_no_input_source():
@@ -378,5 +417,402 @@ llm:
         # Defaults for unset fields
         assert settings.llm.api_key is None
         assert settings.llm.enable_logging is True
+    finally:
+        yaml_path.unlink()
+
+
+# --- TranscriptionSettings tests ---
+
+
+def test_transcription_settings_defaults():
+    """Test TranscriptionSettings with defaults."""
+    settings = TranscriptionSettings()
+    assert settings.backend == "local"
+    assert settings.endpoint_url is None
+    assert settings.worker_api_key is None
+    assert settings.remote_timeout == 3600
+    assert settings.max_retries == 2
+    assert settings.fallback_to_local is True
+    assert settings.koyeb is None
+    assert settings.verda is None
+    assert settings.scaleway is None
+    assert settings.file_storage is None
+
+
+def test_transcription_settings_remote():
+    """Test TranscriptionSettings accepts remote backend."""
+    settings = TranscriptionSettings(
+        backend="remote",
+        endpoint_url="http://192.168.178.20:8000",
+        worker_api_key="wk-secret",
+    )
+    assert settings.backend == "remote"
+    assert settings.endpoint_url == "http://192.168.178.20:8000"
+    assert settings.worker_api_key == "wk-secret"
+
+
+def test_transcription_settings_koyeb():
+    """Test TranscriptionSettings with Koyeb config."""
+    settings = TranscriptionSettings(
+        backend="koyeb",
+        endpoint_url="https://hark.koyeb.app",
+        worker_api_key="wk-secret",
+        koyeb=KoyebProviderSettings(token="koyeb-tok"),
+    )
+    assert settings.backend == "koyeb"
+    assert settings.koyeb is not None
+    assert settings.koyeb.token == "koyeb-tok"
+    assert settings.worker_api_key == "wk-secret"
+
+
+def test_transcription_settings_verda_with_file_storage():
+    """Test TranscriptionSettings with Verda and S3 storage."""
+    settings = TranscriptionSettings(
+        backend="verda",
+        endpoint_url="https://containers.datacrunch.io/hark",
+        verda=VerdaProviderSettings(api_key="dc_inf_test", poll_interval=10),
+        file_storage=FileStorageSettings(
+            endpoint="https://s3.example.com",
+            bucket="hark-audio",
+            access_key="AKID",
+            secret_key="SECRET",
+        ),
+    )
+    assert settings.verda is not None
+    assert settings.verda.api_key == "dc_inf_test"
+    assert settings.verda.poll_interval == 10
+    assert settings.file_storage is not None
+    assert settings.file_storage.bucket == "hark-audio"
+
+
+def test_transcription_settings_verda_poll_interval_validation():
+    """Test VerdaProviderSettings poll_interval range validation."""
+    with pytest.raises(ValidationError):
+        VerdaProviderSettings(api_key="x", poll_interval=0)
+    with pytest.raises(ValidationError):
+        VerdaProviderSettings(api_key="x", poll_interval=61)
+
+
+def test_transcription_settings_remote_timeout_validation():
+    """Test remote_timeout minimum validation."""
+    with pytest.raises(ValidationError):
+        TranscriptionSettings(backend="local", remote_timeout=30)
+
+
+def test_harkd_settings_includes_transcription():
+    """Test HarkdSettings has transcription field with defaults."""
+    settings = HarkdSettings()
+    assert isinstance(settings.transcription, TranscriptionSettings)
+    assert settings.transcription.backend == "local"
+
+
+def test_harkd_settings_transcription_from_yaml():
+    """Test TranscriptionSettings loading from YAML file."""
+    yaml_content = """
+transcription:
+  backend: koyeb
+  endpoint_url: https://hark.koyeb.app
+  worker_api_key: wk-from-yaml
+  remote_timeout: 1800
+  max_retries: 3
+  fallback_to_local: false
+  koyeb:
+    token: koyeb-yaml-token
+"""
+    with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_content)
+        yaml_path = Path(f.name)
+
+    try:
+        settings = HarkdSettings.from_yaml(yaml_path)
+        assert settings.transcription.backend == "koyeb"
+        assert settings.transcription.endpoint_url == "https://hark.koyeb.app"
+        assert settings.transcription.worker_api_key == "wk-from-yaml"
+        assert settings.transcription.remote_timeout == 1800
+        assert settings.transcription.max_retries == 3
+        assert settings.transcription.fallback_to_local is False
+        assert settings.transcription.koyeb is not None
+        assert settings.transcription.koyeb.token == "koyeb-yaml-token"
+    finally:
+        yaml_path.unlink()
+
+
+def test_harkd_settings_transcription_verda_from_yaml():
+    """Test Verda TranscriptionSettings loading from YAML with file_storage."""
+    yaml_content = """
+transcription:
+  backend: verda
+  endpoint_url: https://containers.datacrunch.io/hark
+  verda:
+    api_key: dc_inf_yaml
+    poll_interval: 10
+  file_storage:
+    endpoint: https://s3.example.com
+    bucket: hark-audio
+    access_key: AKID
+    secret_key: SECRET
+    region: eu-west-1
+"""
+    with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_content)
+        yaml_path = Path(f.name)
+
+    try:
+        settings = HarkdSettings.from_yaml(yaml_path)
+        assert settings.transcription.backend == "verda"
+        assert settings.transcription.verda is not None
+        assert settings.transcription.verda.api_key == "dc_inf_yaml"
+        assert settings.transcription.verda.poll_interval == 10
+        assert settings.transcription.file_storage is not None
+        assert settings.transcription.file_storage.bucket == "hark-audio"
+        assert settings.transcription.file_storage.region == "eu-west-1"
+    finally:
+        yaml_path.unlink()
+
+
+def test_harkd_settings_transcription_env_override(monkeypatch):
+    """Test TranscriptionSettings can be overridden via env vars."""
+    monkeypatch.setenv("HARKD_TRANSCRIPTION__BACKEND", "koyeb")
+    monkeypatch.setenv("HARKD_TRANSCRIPTION__ENDPOINT_URL", "https://hark.koyeb.app")
+    monkeypatch.setenv("HARKD_TRANSCRIPTION__WORKER_API_KEY", "env-secret")
+    monkeypatch.setenv("HARKD_TRANSCRIPTION__FALLBACK_TO_LOCAL", "false")
+
+    settings = HarkdSettings()
+    assert settings.transcription.backend == "koyeb"
+    assert settings.transcription.endpoint_url == "https://hark.koyeb.app"
+    assert settings.transcription.worker_api_key == "env-secret"
+    assert settings.transcription.fallback_to_local is False
+
+
+def test_speaker_match_threshold_env_override(monkeypatch):
+    """Test speaker_match_threshold can be set via environment variable."""
+    monkeypatch.setenv("HARKD_RECORDING__SPEAKER_MATCH_THRESHOLD", "0.85")
+
+    settings = HarkdSettings()
+    assert settings.recording.speaker_match_threshold == 0.85
+
+
+def test_speaker_match_threshold_from_yaml():
+    """Test speaker_match_threshold loading from YAML file."""
+    yaml_content = """
+recording:
+  speaker_match_threshold: 0.6
+"""
+    with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_content)
+        yaml_path = Path(f.name)
+
+    try:
+        settings = HarkdSettings.from_yaml(yaml_path)
+        assert settings.recording.speaker_match_threshold == 0.6
+    finally:
+        yaml_path.unlink()
+
+
+# --- Infrastructure settings tests ---
+
+
+def test_infra_settings_defaults():
+    """Test InfraSettings with defaults."""
+    settings = InfraSettings()
+    assert settings.docker_image == "ghcr.io/harkhq/harkd/worker:latest"
+    assert settings.idle_timeout == 300
+    assert settings.max_runtime == 0
+    assert settings.provisioning_timeout == 600
+
+
+def test_infra_settings_custom():
+    """Test InfraSettings with custom values."""
+    settings = InfraSettings(
+        docker_image="custom:v1",
+        idle_timeout=600,
+        max_runtime=3600,
+        provisioning_timeout=120,
+    )
+    assert settings.docker_image == "custom:v1"
+    assert settings.idle_timeout == 600
+    assert settings.max_runtime == 3600
+    assert settings.provisioning_timeout == 120
+
+
+def test_infra_settings_provisioning_timeout_validation():
+    """Test provisioning_timeout minimum validation."""
+    with pytest.raises(ValidationError):
+        InfraSettings(provisioning_timeout=30)
+
+
+def test_koyeb_infra_settings():
+    """Test KoyebInfraSettings."""
+    settings = KoyebInfraSettings(api_token="tok")
+    assert settings.api_token == "tok"
+    assert settings.region == "fra"
+    assert settings.instance_type == "gpu-nvidia-rtx-4000-sff-ada"
+    assert settings.app_name == "hark-worker"
+    assert settings.use_native_scale_to_zero is True
+
+
+def test_scaleway_infra_settings():
+    """Test ScalewayInfraSettings."""
+    settings = ScalewayInfraSettings(
+        secret_key="key",
+        organization_id="org",
+        project_id="proj",
+    )
+    assert settings.zone == "fr-par-2"
+    assert settings.instance_type == "L4-1-24G"
+    assert settings.image_id is None
+
+
+def test_datacrunch_infra_settings():
+    """Test DataCrunchInfraSettings."""
+    settings = DataCrunchInfraSettings(
+        client_id="cid",
+        client_secret="csecret",
+    )
+    assert settings.instance_type == "1L40S.6V"
+    assert settings.location == "FIN-01"
+    assert settings.ssh_key_ids == []
+    assert settings.os_volume_id is None
+
+
+def test_transcription_settings_managed_defaults():
+    """Test TranscriptionSettings managed defaults."""
+    settings = TranscriptionSettings()
+    assert settings.managed is False
+    assert settings.infra is None
+    assert settings.koyeb_infra is None
+    assert settings.scaleway_infra is None
+    assert settings.datacrunch_infra is None
+
+
+def test_transcription_settings_managed_koyeb_valid():
+    """Test valid managed Koyeb config."""
+    settings = TranscriptionSettings(
+        backend="koyeb",
+        managed=True,
+        worker_api_key="key",
+        infra=InfraSettings(),
+        koyeb_infra=KoyebInfraSettings(api_token="tok"),
+    )
+    assert settings.managed is True
+
+
+def test_transcription_settings_managed_missing_infra():
+    """Test managed=True without infra settings raises."""
+    with pytest.raises(ValidationError, match="infra"):
+        TranscriptionSettings(
+            backend="koyeb",
+            managed=True,
+        )
+
+
+def test_transcription_settings_managed_koyeb_missing_koyeb_infra():
+    """Test managed koyeb without koyeb_infra raises."""
+    with pytest.raises(ValidationError, match="koyeb_infra"):
+        TranscriptionSettings(
+            backend="koyeb",
+            managed=True,
+            infra=InfraSettings(),
+        )
+
+
+def test_transcription_settings_managed_scaleway_missing_scaleway_infra():
+    """Test managed scaleway without scaleway_infra raises."""
+    with pytest.raises(ValidationError, match="scaleway_infra"):
+        TranscriptionSettings(
+            backend="scaleway",
+            managed=True,
+            infra=InfraSettings(),
+        )
+
+
+def test_transcription_settings_managed_verda_missing_datacrunch_infra():
+    """Test managed verda without datacrunch_infra raises."""
+    with pytest.raises(ValidationError, match="datacrunch_infra"):
+        TranscriptionSettings(
+            backend="verda",
+            managed=True,
+            infra=InfraSettings(),
+        )
+
+
+def test_transcription_settings_managed_local_no_infra_needed():
+    """Test managed=True with local backend needs no infra config."""
+    settings = TranscriptionSettings(
+        backend="local",
+        managed=True,
+    )
+    assert settings.managed is True
+    assert settings.infra is None
+
+
+def test_transcription_settings_managed_remote_no_infra_needed():
+    """Test managed=True with remote backend needs no infra config."""
+    settings = TranscriptionSettings(
+        backend="remote",
+        managed=True,
+        endpoint_url="http://192.168.178.20:8000",
+    )
+    assert settings.managed is True
+    assert settings.infra is None
+
+
+def test_transcription_settings_remote_from_yaml():
+    """Test remote TranscriptionSettings loading from YAML file."""
+    yaml_content = """
+transcription:
+  backend: remote
+  endpoint_url: http://192.168.178.20:8000
+  worker_api_key: wk-from-yaml
+  remote_timeout: 1800
+  fallback_to_local: true
+"""
+    with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_content)
+        yaml_path = Path(f.name)
+
+    try:
+        settings = HarkdSettings.from_yaml(yaml_path)
+        assert settings.transcription.backend == "remote"
+        assert settings.transcription.endpoint_url == "http://192.168.178.20:8000"
+        assert settings.transcription.worker_api_key == "wk-from-yaml"
+        assert settings.transcription.remote_timeout == 1800
+        assert settings.transcription.fallback_to_local is True
+        # No provider-specific config needed
+        assert settings.transcription.koyeb is None
+        assert settings.transcription.scaleway is None
+    finally:
+        yaml_path.unlink()
+
+
+def test_transcription_settings_managed_from_yaml():
+    """Test managed config loading from YAML."""
+    yaml_content = """
+transcription:
+  backend: koyeb
+  managed: true
+  worker_api_key: wk-yaml
+  infra:
+    docker_image: ghcr.io/test/worker:latest
+    idle_timeout: 600
+  koyeb_infra:
+    api_token: koyeb-yaml-token
+    region: was
+    use_native_scale_to_zero: false
+"""
+    with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_content)
+        yaml_path = Path(f.name)
+
+    try:
+        settings = HarkdSettings.from_yaml(yaml_path)
+        assert settings.transcription.managed is True
+        assert settings.transcription.infra is not None
+        assert settings.transcription.infra.docker_image == "ghcr.io/test/worker:latest"
+        assert settings.transcription.infra.idle_timeout == 600
+        assert settings.transcription.koyeb_infra is not None
+        assert settings.transcription.koyeb_infra.api_token == "koyeb-yaml-token"
+        assert settings.transcription.koyeb_infra.region == "was"
+        assert settings.transcription.koyeb_infra.use_native_scale_to_zero is False
     finally:
         yaml_path.unlink()

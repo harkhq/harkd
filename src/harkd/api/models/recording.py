@@ -13,6 +13,7 @@ __all__ = [
     "SegmentModel",
     "RecordingSettings",
     "RecordingOverrides",
+    "RetryOverrides",
     "RecordingCreate",
     "RecordingUpdate",
     "ActiveRecordingUpdate",
@@ -85,6 +86,9 @@ class RecordingSettings(BaseModel):
     diarization: bool = Field(default=True, description="Enable speaker diarization")
     noise_reduction: bool = Field(default=True, description="Enable noise reduction")
     normalization: bool = Field(default=True, description="Enable audio normalization")
+    mic_gain: float = Field(
+        default=2.0, ge=0.1, le=10.0, description="Microphone gain multiplier (1.0 = no gain)"
+    )
     word_timestamps: bool = Field(default=False, description="Include word-level timestamps")
 
     @field_validator("model")
@@ -111,6 +115,9 @@ class RecordingOverrides(BaseModel):
     diarization: bool | None = Field(None, description="Enable speaker diarization")
     noise_reduction: bool | None = Field(None, description="Enable noise reduction")
     normalization: bool | None = Field(None, description="Enable audio normalization")
+    mic_gain: float | None = Field(
+        None, ge=0.1, le=10.0, description="Microphone gain multiplier (1.0 = no gain)"
+    )
     word_timestamps: bool | None = Field(None, description="Include word-level timestamps")
 
     @model_validator(mode="after")
@@ -119,6 +126,19 @@ class RecordingOverrides(BaseModel):
         if self.mic_enabled is False and self.speaker_enabled is False:
             raise ValueError("At least one input must be enabled")
         return self
+
+
+class RetryOverrides(BaseModel):
+    """Diarization overrides for retry/re-diarization."""
+
+    num_speakers: int | None = Field(
+        None, ge=1, description="Exact speaker count hint for diarization"
+    )
+    min_speakers: int | None = Field(None, ge=1, description="Minimum speakers")
+    max_speakers: int | None = Field(None, ge=1, description="Maximum speakers")
+    clustering_threshold: float | None = Field(
+        None, ge=0.0, le=2.0, description="Lower = merge more aggressively, fewer speakers"
+    )
 
 
 class RecordingCreate(BaseModel):
@@ -134,8 +154,18 @@ class RecordingUpdate(BaseModel):
     """Request to update a recording."""
 
     title: str | None = Field(None, max_length=200)
+    tags: list[str] | None = None
+    tasks: list[dict[str, Any]] | None = None
+    decisions: list[str] | None = None
     speakers: dict[str, str] | None = Field(
         None, description="Speaker label mapping: {SPEAKER_00: 'Alice'}"
+    )
+    speaker_profile_ids: dict[str, str] | None = Field(
+        None,
+        description="Map speaker labels to existing voice profile IDs",
+    )
+    create_voice_profiles: bool = Field(
+        False, description="Create voice profiles for named speakers"
     )
 
 
@@ -169,6 +199,16 @@ class RecordingResponse(BaseModel):
     # While processing:
     processing_stage: ProcessingStage | None = None
     processing_progress: float | None = Field(None, ge=0, le=1)
+    processing_started_at: datetime | None = Field(
+        None, description="When processing began (ISO 8601)"
+    )
+    retry_count: int = Field(default=0, description="Number of processing attempts")
+    last_error: str | None = Field(default=None, description="Last error message")
+
+    # Processing metrics:
+    processing_duration: float | None = Field(
+        None, ge=0, description="Wall-clock processing time in seconds"
+    )
 
     # When complete:
     model: str | None = None
@@ -176,6 +216,8 @@ class RecordingResponse(BaseModel):
     language_confidence: float | None = Field(None, ge=0, le=1)
     diarized: bool | None = None
     speakers: list[str] | None = None
+    speaker_embeddings: dict[str, list[float]] | None = None
+    speaker_profiles: dict[str, str] | None = None
     segments: list[SegmentModel] | None = None
     transcript: str | None = None
 
@@ -198,6 +240,7 @@ class RecordingListItem(BaseModel):
     duration: float = Field(..., ge=0)
     status: RecordingStatus
     speakers: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     language: str | None = None
 
 

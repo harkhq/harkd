@@ -1,5 +1,7 @@
 """Filesystem-based recording storage implementation."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import json
@@ -10,7 +12,7 @@ from pathlib import Path
 
 from harkd.exceptions import RecordingNotFoundError, StorageError
 from harkd.storage.base import RecordingStorage
-from harkd.storage.models import StorageRecording
+from harkd.storage.models import SpeakerEmbeddings, StorageRecording
 
 __all__ = ["FilesystemRecordingStorage"]
 
@@ -63,7 +65,7 @@ class FilesystemRecordingStorage(RecordingStorage):
             ) from e
 
     async def get(self, recording_id: str) -> StorageRecording | None:
-        """Get a recording by ID."""
+        """Get a recording by ID, including speaker embeddings."""
         recording_dir = self.recordings_dir / recording_id
         metadata_file = recording_dir / "metadata.json"
 
@@ -71,7 +73,11 @@ class FilesystemRecordingStorage(RecordingStorage):
             return None
 
         try:
-            return await self._read_metadata(metadata_file)
+            recording = await self._read_metadata(metadata_file)
+            embeddings = await self._read_embeddings(recording_dir)
+            if embeddings is not None:
+                recording.speaker_embeddings = embeddings
+            return recording
         except Exception as e:
             raise StorageError(
                 f"Failed to read recording {recording_id}: {e}",
@@ -160,6 +166,17 @@ class FilesystemRecordingStorage(RecordingStorage):
                 details={"recording_id": recording_id},
             ) from e
 
+    async def get_speaker_embeddings(self, recording_id: str) -> SpeakerEmbeddings | None:
+        """Get speaker embeddings for a recording without loading full metadata."""
+        recording_dir = self.recordings_dir / recording_id
+        try:
+            return await self._read_embeddings(recording_dir)
+        except Exception as e:
+            raise StorageError(
+                f"Failed to read embeddings for {recording_id}: {e}",
+                details={"recording_id": recording_id},
+            ) from e
+
     async def count(self, status: str | None = None) -> int:
         """Count recordings."""
         try:
@@ -188,32 +205,53 @@ class FilesystemRecordingStorage(RecordingStorage):
     # Helper methods
 
     async def _write_metadata(self, recording_dir: Path, recording: StorageRecording) -> None:
-        """Write recording metadata to JSON file atomically.
+        """Write recording metadata and embeddings to separate JSON files atomically.
 
-        Uses write-to-temp-then-rename pattern for crash safety.
+        Speaker embeddings are written to embeddings.json, everything else to
+        metadata.json.  Embeddings are written *first* for crash safety: if we
+        crash between the two writes, old metadata.json still has embeddings or
+        embeddings.json already has the new data.
         """
-        metadata_file = recording_dir / "metadata.json"
         data = recording.model_dump(mode="json")
+        embeddings_data = data.pop("speaker_embeddings", None)
+
+        embeddings_file = recording_dir / "embeddings.json"
+        metadata_file = recording_dir / "metadata.json"
 
         def write_atomic():
-            # Write to temp file in same directory (same filesystem for atomic rename)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(recording_dir), suffix=".tmp", prefix=".metadata-"
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-                # Atomic rename on POSIX
-                os.replace(tmp_path, str(metadata_file))
-            except BaseException:
-                # Clean up temp file on any failure
+            # 1. Write/remove embeddings.json first
+            if embeddings_data is not None:
+                self._atomic_write_json(recording_dir, embeddings_file, embeddings_data)
+            else:
                 with contextlib.suppress(OSError):
-                    os.unlink(tmp_path)
-                raise
+                    os.unlink(embeddings_file)
+
+            # 2. Write metadata.json (without speaker_embeddings)
+            self._atomic_write_json(recording_dir, metadata_file, data, indent=2)
 
         await asyncio.to_thread(write_atomic)
+
+    @staticmethod
+    def _atomic_write_json(
+        parent_dir: Path,
+        target: Path,
+        data: object,
+        indent: int | None = None,
+    ) -> None:
+        """Write JSON data to *target* atomically via temp-file + rename."""
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(parent_dir), suffix=".tmp", prefix=f".{target.stem}-"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=indent, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(target))
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
 
     async def _read_metadata(self, metadata_file: Path) -> StorageRecording:
         """Read recording metadata from JSON file."""
@@ -224,6 +262,19 @@ class FilesystemRecordingStorage(RecordingStorage):
 
         data = await asyncio.to_thread(read)
         return StorageRecording.model_validate(data)
+
+    async def _read_embeddings(self, recording_dir: Path) -> SpeakerEmbeddings | None:
+        """Read speaker embeddings from embeddings.json if it exists."""
+        embeddings_file = recording_dir / "embeddings.json"
+
+        def read():
+            try:
+                with open(embeddings_file, encoding="utf-8") as f:
+                    return json.load(f)
+            except FileNotFoundError:
+                return None
+
+        return await asyncio.to_thread(read)
 
     def _cleanup_directory(self, directory: Path) -> None:
         """Remove directory and contents (sync)."""

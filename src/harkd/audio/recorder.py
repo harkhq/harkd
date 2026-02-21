@@ -43,6 +43,7 @@ class AudioRecorder:
         speaker_enabled: bool = True,
         sample_rate: int = 16000,
         level_callback: Callable[[float, float], None] | None = None,
+        mic_gain: float = 1.0,
     ):
         """Initialize audio recorder.
 
@@ -71,6 +72,7 @@ class AudioRecorder:
         self.output_path = output_path
         self.sample_rate = sample_rate
         self.level_callback = level_callback
+        self.mic_gain = mic_gain
 
         # Mute state (toggled mid-recording)
         self._mic_muted: bool = not mic_enabled
@@ -416,7 +418,13 @@ class AudioRecorder:
             logger.warning(f"Microphone dual-stream callback status: {status}")
 
         try:
-            data = np.zeros_like(indata) if self._mic_muted else indata.copy()
+            if self._mic_muted:
+                data = np.zeros_like(indata)
+            else:
+                data = indata.copy()
+                if self.mic_gain != 1.0:
+                    data *= self.mic_gain
+                    np.clip(data, -1.0, 1.0, out=data)
 
             # Compute level from the data we'll actually use
             rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
@@ -451,42 +459,54 @@ class AudioRecorder:
             logger.error(f"Error in speaker dual-stream callback: {e}", exc_info=True)
 
     def _interleave_audio(self) -> None:
-        """Interleave mic and speaker audio into stereo."""
-        # Continue processing while recording OR while buffers have data
+        """Interleave mic and speaker audio into stereo.
+
+        Accumulates samples from each stream and pairs them by sample count
+        (both at self.sample_rate after resampling). Excess samples carry over
+        to the next iteration so no audio data is ever lost.
+
+        The previous approach paired chunks 1:1 and truncated to min_len,
+        which silently discarded samples whenever chunk sizes differed after
+        resampling (e.g. due to PulseAudio batching or clock drift).
+        Over long recordings this caused progressive time compression.
+        """
+        mic_accum = np.empty((0, 1), dtype=np.float32)
+        speaker_accum = np.empty((0, 1), dtype=np.float32)
+
         while not self._stop_event.is_set() or self._mic_buffer or self._speaker_buffer:
-            chunks_to_write = []
-
             with self._buffer_lock:
-                # Process available chunks
-                min_chunks = min(len(self._mic_buffer), len(self._speaker_buffer))
+                new_mic = list(self._mic_buffer)
+                self._mic_buffer.clear()
+                new_speaker = list(self._speaker_buffer)
+                self._speaker_buffer.clear()
 
-                for _ in range(min_chunks):
-                    mic_chunk = self._mic_buffer.pop(0)
-                    speaker_chunk = self._speaker_buffer.pop(0)
+            # Accumulate mic samples (already at target rate)
+            if new_mic:
+                mic_accum = np.concatenate([mic_accum] + new_mic)
 
-                    # Resample speaker if at different rate
+            # Accumulate speaker samples (resample each chunk to target rate)
+            if new_speaker:
+                resampled = []
+                for chunk in new_speaker:
                     if self._speaker_native_rate and self._speaker_native_rate != self.sample_rate:
-                        speaker_chunk = self._resample(speaker_chunk, self._speaker_native_rate)
+                        chunk = self._resample(chunk, self._speaker_native_rate)
+                    resampled.append(chunk)
+                speaker_accum = np.concatenate([speaker_accum] + resampled)
 
-                    # Ensure same length (may differ after resampling)
-                    min_len = min(len(mic_chunk), len(speaker_chunk))
-                    mic_chunk = mic_chunk[:min_len]
-                    speaker_chunk = speaker_chunk[:min_len]
+            # Write as much paired audio as possible
+            min_len = min(len(mic_accum), len(speaker_accum))
+            if min_len > 0:
+                stereo = np.column_stack((mic_accum[:min_len], speaker_accum[:min_len]))
+                mic_accum = mic_accum[min_len:]
+                speaker_accum = speaker_accum[min_len:]
 
-                    # Create stereo: L=mic, R=speaker
-                    stereo = np.column_stack((mic_chunk, speaker_chunk))
-                    chunks_to_write.append(stereo)
-
-            # Send chunks to writer thread via queue
-            for stereo in chunks_to_write:
                 try:
                     self._write_queue.put_nowait(stereo)
                 except (ValueError, AttributeError):
-                    # Queue or file was closed, stop writing
                     break
 
             # Report per-input levels
-            if self.level_callback and chunks_to_write:
+            if self.level_callback and min_len > 0:
                 try:
                     self.level_callback(self._mic_level, self._speaker_level)
                 except Exception as e:

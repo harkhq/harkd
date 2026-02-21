@@ -105,6 +105,11 @@ class TestTranscribeAudioWorkerTranscriberPath:
             device="auto",
             language="de",
             compute_type="auto",
+            beam_size=3,
+            batch_size=16,
+            vad_onset=0.5,
+            vad_offset=0.363,
+            vad_method="pyannote",
         )
         mt.transcribe.assert_called_once()
         call_kwargs = mt.transcribe.call_args
@@ -159,7 +164,16 @@ class TestTranscribeAudioWorkerDiarizerPath:
             model_name="large-v3",
             device="auto",
             hf_token="hf_mytoken",
+            num_speakers=None,
+            min_speakers=None,
+            max_speakers=None,
+            clustering_threshold=None,
             compute_type="auto",
+            beam_size=3,
+            batch_size=16,
+            vad_onset=0.5,
+            vad_offset=0.363,
+            vad_method="pyannote",
         )
         md.transcribe_and_diarize.assert_called_once()
         call_kwargs = md.transcribe_and_diarize.call_args
@@ -233,11 +247,9 @@ class TestMainBlockCLI:
         # Shouldn't see "Usage:" since arg count is correct
         assert "Usage:" not in proc.stdout
 
-    def test_json_delimiter_matches_service(self):
-        """Test that the JSON delimiter constant matches recording_service."""
-        from harkd.services.recording_service import (
-            _JSON_DELIMITER as svc_delim,
-        )
+    def test_json_delimiter_matches_local_backend(self):
+        """Test that the JSON delimiter constant matches local backend."""
         from harkd.services.transcription_worker import _JSON_DELIMITER
+        from harkd.transcription.local import _JSON_DELIMITER as backend_delim
 
-        assert svc_delim == _JSON_DELIMITER
+        assert backend_delim == _JSON_DELIMITER

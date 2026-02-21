@@ -1,14 +1,13 @@
 """Recording service for managing recording lifecycle and processing."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
-import json
 import logging
-import subprocess
-import sys
 import time
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from harkd.api.models.recording import (
@@ -24,6 +23,7 @@ from harkd.api.models.recording import (
 )
 from harkd.audio.recorder import AudioRecorder
 from harkd.config import HarkdSettings
+from harkd.events import Event, get_event_bus
 from harkd.exceptions import (
     InvalidStateError,
     NoActiveRecordingError,
@@ -32,23 +32,20 @@ from harkd.exceptions import (
     RecordingInProgressError,
     RecordingNotFoundError,
 )
-from harkd.services.title_generator import generate_title
 from harkd.state.recording_state import RecordingState, get_recording_state
 from harkd.storage.filesystem.recordings import FilesystemRecordingStorage
 from harkd.storage.models import StorageRecording
+
+if TYPE_CHECKING:
+    from harkd.services.processing_worker import ProcessingWorker
+    from harkd.services.voice_profile_service import VoiceProfileService
 
 __all__ = ["RecordingService"]
 
 logger = logging.getLogger(__name__)
 
-# Subprocess timeout for transcription (10 minutes)
-_SUBPROCESS_TIMEOUT = 600
-
 # Minimum interval between audio level writes to disk (seconds)
 _AUDIO_LEVEL_WRITE_INTERVAL = 1.0
-
-# JSON delimiter used to find structured output in subprocess stdout
-_JSON_DELIMITER = "---HARKD_JSON_RESULT---"
 
 
 class RecordingService:
@@ -66,6 +63,8 @@ class RecordingService:
         storage: FilesystemRecordingStorage,
         config: HarkdSettings,
         recording_state: RecordingState | None = None,
+        worker: ProcessingWorker | None = None,
+        voice_profile_service: VoiceProfileService | None = None,
     ):
         """Initialize recording service.
 
@@ -73,11 +72,14 @@ class RecordingService:
             storage: Recording storage backend
             config: Daemon settings (provides recording defaults)
             recording_state: Recording state manager (defaults to global singleton)
+            worker: Processing worker for background transcription
+            voice_profile_service: Voice profile service for creating profiles from speakers
         """
         self.storage = storage
         self.config = config
         self.recording_state = recording_state or get_recording_state()
-        self._processing_tasks: dict[str, asyncio.Task] = {}
+        self.worker = worker
+        self.voice_profile_service = voice_profile_service
         self._recorder: AudioRecorder | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._mic_level: float = 0.0
@@ -118,6 +120,7 @@ class RecordingService:
         # Determine mic/speaker enabled (default both True)
         mic_enabled = final_settings.pop("mic_enabled", True)
         speaker_enabled = final_settings.pop("speaker_enabled", True)
+        mic_gain = final_settings.get("mic_gain", 1.0)
 
         logger.info(
             f"Starting recording {recording_id}: "
@@ -163,6 +166,7 @@ class RecordingService:
                 level_callback=lambda mic_lvl, spk_lvl: self._update_audio_levels(
                     recording_id, mic_lvl, spk_lvl
                 ),
+                mic_gain=mic_gain,
             )
 
             # Start recording
@@ -186,6 +190,19 @@ class RecordingService:
             raise
 
         logger.info(f"Recording {recording_id} started successfully")
+
+        bus = get_event_bus()
+        bus.emit(
+            Event(
+                "recording_started",
+                {"recording_id": recording_id, "title": storage_recording.title},
+            )
+        )
+        bus.emit(Event("invalidate", {"entity": "recordings"}))
+
+        # Pre-warm transcription backend (e.g. start provisioning GPU infra)
+        if self.worker is not None:
+            asyncio.create_task(self.worker.pre_warm_backend())
 
         return self._storage_to_response(storage_recording)
 
@@ -296,32 +313,27 @@ class RecordingService:
         storage_recording.duration = duration
         storage_recording.processing_stage = "preprocessing"
         storage_recording.processing_progress = 0.0
+        storage_recording.processing_started_at = datetime.now(UTC)
         storage_recording.mic_level = None  # No longer recording
         storage_recording.speaker_level = None
 
         await self.storage.update(storage_recording)
 
-        # Start background processing
-        task = asyncio.create_task(self._process_recording(recording_id))
+        bus = get_event_bus()
+        bus.emit(Event("recording_stopped", {"recording_id": recording_id}))
+        bus.emit(Event("invalidate", {"entity": "recordings"}))
 
-        # Add done callback to log any unhandled exceptions
-        def _log_task_exception(task: asyncio.Task) -> None:
-            try:
-                task.result()
-            except asyncio.CancelledError:
-                pass  # Task was cancelled, this is expected
-            except Exception as e:
-                logger.error(
-                    f"Unhandled exception in background processing for {recording_id}: {e}",
-                    exc_info=True,
-                )
-
-        task.add_done_callback(_log_task_exception)
-        self._processing_tasks[recording_id] = task
+        # Enqueue for background processing
+        if self.worker is not None:
+            self.worker.enqueue(recording_id)
+        else:
+            logger.warning(
+                f"[{recording_id}] No processing worker available, "
+                "recording will stay in processing state"
+            )
 
         logger.info(
-            f"Recording {recording_id} stopped, duration={duration:.1f}s, "
-            "background processing started"
+            f"Recording {recording_id} stopped, duration={duration:.1f}s, processing enqueued"
         )
 
         return self._storage_to_response(storage_recording)
@@ -359,17 +371,13 @@ class RecordingService:
                 logger.warning("Recording state already cleared")
 
         elif status == RecordingStatus.PROCESSING.value:
-            # Cancel processing task
-            task = self._processing_tasks.get(recording_id)
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    logger.debug(f"Processing task for {recording_id} cancelled")
+            # Recording is queued/processing in the worker — just let deletion proceed.
+            # The worker will notice the recording is gone when it tries to read storage.
+            logger.debug(f"Recording {recording_id} is processing, will be deleted")
 
         # Delete recording
         await self.storage.delete(recording_id)
+        get_event_bus().emit(Event("invalidate", {"entity": "recordings"}))
         logger.info(f"Recording {recording_id} cancelled and deleted")
 
     async def get_recording(self, recording_id: str) -> RecordingResponse:
@@ -458,6 +466,7 @@ class RecordingService:
                 duration=r.duration,
                 status=RecordingStatus(r.status),
                 speakers=list(r.speakers),
+                tags=list(r.tags),
                 language=r.language,
             )
             for r in paginated
@@ -497,7 +506,14 @@ class RecordingService:
 
         # Non-complete recordings: only title updates allowed
         if storage_recording.status != RecordingStatus.COMPLETE.value:
-            disallowed = set(update_dict.keys()) - {"title"}
+            disallowed = set(update_dict.keys()) - {
+                "title",
+                "tags",
+                "tasks",
+                "decisions",
+                "create_voice_profiles",
+                "speaker_profile_ids",
+            }
             if disallowed:
                 raise InvalidStateError(
                     message=(
@@ -510,6 +526,15 @@ class RecordingService:
         if "title" in update_dict:
             storage_recording.title = update_dict["title"]
 
+        if "tags" in update_dict:
+            storage_recording.tags = update_dict["tags"]
+
+        if "tasks" in update_dict:
+            storage_recording.tasks = update_dict["tasks"]
+
+        if "decisions" in update_dict:
+            storage_recording.decisions = update_dict["decisions"]
+
         if "speakers" in update_dict:
             # Update speaker names in segments
             speaker_mapping = update_dict["speakers"]
@@ -521,10 +546,57 @@ class RecordingService:
                     if word.get("speaker") in speaker_mapping:
                         word["speaker"] = speaker_mapping[word["speaker"]]
 
-            # Update speakers list
-            storage_recording.speakers = list(speaker_mapping.values())
+            # Update speakers list (deduplicate for merged speakers)
+            storage_recording.speakers = list(dict.fromkeys(speaker_mapping.values()))
+
+            # Link speakers to voice profiles
+            speaker_profiles: dict[str, str] = {}
+
+            # 1. Process explicit profile links first
+            explicit_profile_ids = update_dict.get("speaker_profile_ids") or {}
+            if explicit_profile_ids and self.voice_profile_service:
+                for label, profile_id in explicit_profile_ids.items():
+                    # Validate profile exists (raises VoiceProfileNotFoundError)
+                    await self.voice_profile_service.get_profile(profile_id)
+                    embedding = (storage_recording.speaker_embeddings or {}).get(label)
+                    if embedding is None:
+                        continue
+                    await self.voice_profile_service.add_embedding(
+                        profile_id=profile_id,
+                        recording_id=recording_id,
+                        speaker_label=label,
+                        vector=embedding,
+                        audio_duration=storage_recording.duration,
+                    )
+                    speaker_profiles[label] = profile_id
+
+            # 2. Create voice profiles for remaining (unlinked) speakers
+            if (
+                update_dict.get("create_voice_profiles")
+                and self.voice_profile_service
+                and storage_recording.speaker_embeddings
+            ):
+                for original_label, name in speaker_mapping.items():
+                    if original_label in speaker_profiles:
+                        continue
+                    embedding = storage_recording.speaker_embeddings.get(original_label)
+                    if embedding is None:
+                        continue
+                    profile = await self.voice_profile_service.find_or_create_by_name(name)
+                    await self.voice_profile_service.add_embedding(
+                        profile_id=profile.id,
+                        recording_id=recording_id,
+                        speaker_label=original_label,
+                        vector=embedding,
+                        audio_duration=storage_recording.duration,
+                    )
+                    speaker_profiles[original_label] = profile.id
+
+            if speaker_profiles:
+                storage_recording.speaker_profiles = speaker_profiles
 
         await self.storage.update(storage_recording)
+        get_event_bus().emit(Event("invalidate", {"entity": "recordings"}))
 
         logger.info(f"Recording {recording_id} updated successfully")
         return self._storage_to_response(storage_recording)
@@ -593,6 +665,34 @@ class RecordingService:
 
         return await self.get_active_recording()
 
+    async def retry_recording(
+        self, recording_id: str, overrides: dict | None = None
+    ) -> RecordingResponse:
+        """Retry a failed recording.
+
+        Args:
+            recording_id: ID of recording to retry
+            overrides: Optional diarization overrides to merge into settings
+
+        Returns:
+            Updated recording response with status "processing"
+
+        Raises:
+            RecordingNotFoundError: If recording doesn't exist
+            RetryNotAllowedError: If recording is not in error state
+            RuntimeError: If no processing worker is available
+        """
+        if self.worker is None:
+            raise RuntimeError("No processing worker available")
+        if overrides:
+            storage_recording = await self.storage.get(recording_id)
+            if storage_recording is None:
+                raise RecordingNotFoundError(recording_id)
+            storage_recording.settings.update(overrides)
+            await self.storage.update(storage_recording)
+        await self.worker.retry(recording_id)
+        return await self.get_recording(recording_id)
+
     async def delete_recording(self, recording_id: str) -> None:
         """Delete a recording.
 
@@ -620,6 +720,17 @@ class RecordingService:
         """
         self._mic_level = mic_level
         self._speaker_level = speaker_level
+
+        get_event_bus().emit(
+            Event(
+                "audio_levels",
+                {
+                    "recording_id": recording_id,
+                    "mic_level": mic_level,
+                    "speaker_level": speaker_level,
+                },
+            )
+        )
 
         # Throttle disk writes to at most once per second
         now = time.monotonic()
@@ -652,288 +763,6 @@ class RecordingService:
                 await self.storage.update(storage_recording)
         except Exception as e:
             logger.debug(f"Failed to update audio levels for {recording_id}: {e}")
-
-    async def _run_transcription_subprocess(
-        self,
-        recording_id: str,
-        audio_path: str,
-        model_name: str,
-        language: str | None,
-        word_timestamps: bool,
-        diarize: bool = False,
-        hf_token: str | None = None,
-    ) -> dict:
-        """Run transcription in a separate subprocess.
-
-        Args:
-            recording_id: Recording ID (for logging)
-            audio_path: Path to audio file
-            model_name: Whisper model name
-            language: Language code or None
-            word_timestamps: Whether to include word timestamps
-            diarize: Whether to run speaker diarization
-            hf_token: HuggingFace token for diarization models
-
-        Returns:
-            Parsed transcription result dict
-
-        Raises:
-            RuntimeError: If subprocess fails or times out
-        """
-        cmd = [
-            sys.executable,
-            "-m",
-            "harkd.services.transcription_worker",
-            str(audio_path),
-            model_name,
-            str(language) if language else "None",
-            str(word_timestamps).lower(),
-            str(diarize).lower(),
-            hf_token or "None",
-        ]
-
-        logger.info(f"[{recording_id}] Starting transcription subprocess: {' '.join(cmd)}")
-
-        def run_subprocess():
-            return subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=_SUBPROCESS_TIMEOUT,
-            )
-
-        loop = asyncio.get_event_loop()
-        try:
-            proc = await loop.run_in_executor(None, run_subprocess)
-        except subprocess.TimeoutExpired as e:
-            logger.error(
-                f"[{recording_id}] Transcription subprocess timed out after {_SUBPROCESS_TIMEOUT}s"
-            )
-            raise RuntimeError(f"Transcription timed out after {_SUBPROCESS_TIMEOUT}s") from e
-
-        stdout = proc.stdout
-        stderr = proc.stderr
-
-        if proc.returncode != 0:
-            logger.error(
-                f"[{recording_id}] Transcription subprocess failed with code {proc.returncode}. "
-                f"stderr: {stderr}"
-            )
-            raise RuntimeError(f"Transcription failed: {stderr}")
-
-        logger.info(f"[{recording_id}] Transcription subprocess completed successfully")
-
-        # Parse JSON result: look for delimiter first, fall back to last line
-        try:
-            if _JSON_DELIMITER in stdout:
-                json_str = stdout.split(_JSON_DELIMITER)[-1].strip()
-            else:
-                # Fallback: JSON on the last non-empty line
-                json_str = stdout.strip().split("\n")[-1]
-            result_dict = json.loads(json_str)
-        except (json.JSONDecodeError, IndexError) as e:
-            logger.error(
-                f"[{recording_id}] Failed to parse transcription output: {e}. stdout: {stdout}"
-            )
-            raise
-
-        return result_dict
-
-    @staticmethod
-    def _convert_transcription_result(
-        result_dict: dict,
-    ) -> tuple[list[dict], str, float, list[str]]:
-        """Convert a transcription result dict to segments, language, confidence, and speakers.
-
-        Args:
-            result_dict: Parsed JSON from transcription subprocess
-
-        Returns:
-            Tuple of (segments, detected_language, language_confidence, speakers)
-        """
-        segments = [
-            {
-                "start": seg["start"],
-                "end": seg["end"],
-                "text": seg["text"],
-                "speaker": seg.get("speaker"),
-                "words": [
-                    {
-                        "start": w["start"],
-                        "end": w["end"],
-                        "word": w["word"],
-                        "speaker": w.get("speaker"),
-                    }
-                    for w in seg.get("words", [])
-                ],
-            }
-            for seg in result_dict.get("segments", [])
-        ]
-
-        detected_language = result_dict.get("language", "unknown")
-        language_confidence = result_dict.get("language_probability", 0.0)
-        speakers = result_dict.get("speakers", [])
-
-        return segments, detected_language, language_confidence, speakers
-
-    async def _process_recording(self, recording_id: str) -> None:
-        """Background task to process recording after stop.
-
-        Updates recording status as it progresses through stages:
-        1. preprocessing -> transcription -> diarization -> complete
-
-        Args:
-            recording_id: ID of recording to process
-        """
-        logger.info(f"[{recording_id}] Starting background processing")
-
-        try:
-            storage_recording = await self.storage.get(recording_id)
-            if storage_recording is None:
-                logger.error(f"[{recording_id}] Recording not found during processing")
-                return
-
-            # Audio file is stored alongside metadata: {base_path}/recordings/{id}/audio.wav
-            audio_path = self.storage.base_path / "recordings" / recording_id / "audio.wav"
-            if not await asyncio.to_thread(audio_path.exists):
-                raise FileNotFoundError(f"Audio file not found: {audio_path}")
-
-            settings = storage_recording.settings
-
-            # Stage 1: Transcription
-            logger.info(f"[{recording_id}] Stage 1: Transcription")
-            storage_recording.processing_stage = "transcription"
-            storage_recording.processing_progress = 0.0
-            await self.storage.update(storage_recording)
-
-            # Check if diarization is enabled
-            diarization_enabled = settings.get("diarization", False)
-            word_timestamps = settings.get("word_timestamps", False)
-
-            # Prepare transcription parameters
-            model_name = settings.get("model", "base")
-            language = settings.get("language") if settings.get("language") != "auto" else None
-
-            if diarization_enabled:
-                hf_token = self.config.hf_token
-                # Run diarization in subprocess
-                logger.info(f"[{recording_id}] Using diarization")
-                storage_recording.processing_stage = "diarization"
-                storage_recording.processing_progress = 0.3
-                await self.storage.update(storage_recording)
-
-                result_dict = await self._run_transcription_subprocess(
-                    recording_id,
-                    str(audio_path),
-                    model_name,
-                    language,
-                    word_timestamps=True,
-                    diarize=True,
-                    hf_token=hf_token,
-                )
-            else:
-                # Regular transcription
-                logger.info(f"[{recording_id}] Running transcription in separate subprocess...")
-                result_dict = await self._run_transcription_subprocess(
-                    recording_id,
-                    str(audio_path),
-                    model_name,
-                    language,
-                    word_timestamps,
-                )
-
-            segments, detected_language, language_confidence, speakers = (
-                self._convert_transcription_result(result_dict)
-            )
-
-            # Strip word-level timestamps if not requested by user
-            if not word_timestamps:
-                for seg in segments:
-                    seg.pop("words", None)
-
-            # Generate full transcript
-            transcript = " ".join(seg["text"] for seg in segments)
-
-            # Re-read title from storage — user may have updated it via PATCH during processing
-            latest = await self.storage.get(recording_id)
-            if latest is not None:
-                storage_recording.title = latest.title
-
-            # Generate title if not provided
-            if storage_recording.title == "Untitled Recording":
-                storage_recording.title = generate_title(transcript)
-                logger.debug(f"[{recording_id}] Generated title: {storage_recording.title}")
-
-            # Stage: Meeting minutes (if LLM enabled and transcript non-empty)
-            if self.config.llm.enabled and transcript.strip():
-                storage_recording.processing_stage = "meeting_minutes"
-                storage_recording.processing_progress = 0.8
-                await self.storage.update(storage_recording)
-
-                try:
-                    from harkd.llm.client import LLMClient
-
-                    llm = LLMClient(self.config.llm)
-                    minutes = await llm.generate_meeting_minutes(
-                        transcript=transcript,
-                        speakers=speakers,
-                        language=detected_language,
-                    )
-                    storage_recording.executive_summary = minutes.executive_summary
-                    storage_recording.meeting_notes = minutes.meeting_notes
-                    storage_recording.tasks = minutes.tasks
-                    storage_recording.decisions = minutes.decisions
-                except Exception as e:
-                    logger.warning(
-                        f"[{recording_id}] Meeting minutes generation failed: {e}",
-                        exc_info=True,
-                    )
-                    # Non-fatal: recording still completes without minutes
-
-            # Update recording with final data
-            storage_recording.status = "complete"
-            storage_recording.processing_stage = None
-            storage_recording.processing_progress = None
-            storage_recording.model = settings.get("model")
-            storage_recording.language = detected_language
-            storage_recording.language_confidence = language_confidence
-            storage_recording.diarized = diarization_enabled
-            storage_recording.speakers = speakers
-            storage_recording.segments = segments
-            storage_recording.transcript = transcript
-
-            await self.storage.update(storage_recording)
-
-            logger.info(
-                f"[{recording_id}] Processing complete: "
-                f"{len(segments)} segments, {len(speakers)} speakers, "
-                f"language={detected_language}"
-            )
-
-        except asyncio.CancelledError:
-            logger.info(f"[{recording_id}] Processing cancelled")
-            raise
-        except Exception as e:
-            logger.error(
-                f"[{recording_id}] Processing failed: {e}",
-                exc_info=True,
-            )
-            # Update status to error
-            try:
-                storage_recording = await self.storage.get(recording_id)
-                if storage_recording:
-                    storage_recording.status = "error"
-                    storage_recording.processing_stage = None
-                    storage_recording.processing_progress = None
-                    await self.storage.update(storage_recording)
-            except Exception as update_error:
-                logger.error(
-                    f"[{recording_id}] Failed to update error status: {update_error}",
-                    exc_info=True,
-                )
-        finally:
-            # Clean up task reference
-            self._processing_tasks.pop(recording_id, None)
 
     def _storage_to_response(self, storage: StorageRecording) -> RecordingResponse:
         """Convert storage model to API response.
@@ -980,11 +809,16 @@ class RecordingService:
                 ProcessingStage(storage.processing_stage) if storage.processing_stage else None
             ),
             processing_progress=storage.processing_progress,
+            processing_started_at=storage.processing_started_at,
+            retry_count=storage.retry_count,
+            last_error=storage.last_error,
             model=storage.model,
             language=storage.language,
             language_confidence=storage.language_confidence,
             diarized=storage.diarized,
             speakers=storage.speakers,
+            speaker_embeddings=storage.speaker_embeddings,
+            speaker_profiles=storage.speaker_profiles,
             segments=segments,
             transcript=storage.transcript,
             tags=list(storage.tags),

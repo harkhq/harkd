@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = [
@@ -15,6 +15,15 @@ __all__ = [
     "LoggingSettings",
     "RecordingDefaults",
     "LLMSettings",
+    "KoyebProviderSettings",
+    "VerdaProviderSettings",
+    "ScalewayProviderSettings",
+    "FileStorageSettings",
+    "InfraSettings",
+    "KoyebInfraSettings",
+    "ScalewayInfraSettings",
+    "DataCrunchInfraSettings",
+    "TranscriptionSettings",
     "HarkdSettings",
     "get_settings",
 ]
@@ -71,21 +80,195 @@ class RecordingDefaults(BaseModel):
     Light settings can be overridden per-recording via the API.
     """
 
-    model: str = Field(default="large-v3", description="Whisper model name")
+    model: str = Field(default="large-v3", description="Whisper model name or HF model path")
     word_timestamps: bool = Field(default=False, description="Include word-level timestamps")
     language: str = Field(default="auto", description="Language code or 'auto'")
     diarization: bool = Field(default=True, description="Enable speaker diarization")
     noise_reduction: bool = Field(default=True, description="Enable noise reduction")
     normalization: bool = Field(default=True, description="Enable audio normalization")
+    mic_gain: float = Field(
+        default=2.0, ge=0.1, le=10.0, description="Microphone gain multiplier (1.0 = no gain)"
+    )
+    beam_size: int = Field(default=3, ge=1, le=10, description="Beam size for decoding (1=greedy)")
+    batch_size: int = Field(default=16, ge=1, le=128, description="Batch size for transcription")
+    vad_onset: float = Field(default=0.5, ge=0.0, le=1.0, description="VAD onset threshold")
+    vad_offset: float = Field(default=0.363, ge=0.0, le=1.0, description="VAD offset threshold")
+    vad_method: Literal["pyannote", "silero"] = Field(default="pyannote", description="VAD method")
+    transcription_timeout: int = Field(
+        default=1800, ge=60, description="Transcription subprocess timeout in seconds"
+    )
+    max_retries: int = Field(
+        default=3, ge=0, le=10, description="Max retry attempts for failed recordings"
+    )
+    speaker_match_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Cosine similarity threshold for matching speakers to voice profiles",
+    )
 
     @field_validator("model")
     @classmethod
     def validate_model(cls, v: str) -> str:
-        """Validate Whisper model name."""
-        valid = ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"]
-        if v not in valid:
-            raise ValueError(f"Invalid model. Must be one of: {valid}")
-        return v
+        """Validate Whisper model name or HuggingFace model path."""
+        valid_short = [
+            "tiny",
+            "base",
+            "small",
+            "medium",
+            "large",
+            "large-v2",
+            "large-v3",
+            "distil-large-v3",
+            "large-v3-turbo",
+        ]
+        # Accept short names or HF-style paths (org/model-name)
+        if v in valid_short or "/" in v:
+            return v
+        raise ValueError(
+            f"Invalid model. Must be one of {valid_short} "
+            "or a HuggingFace model path (e.g. org/model-name)"
+        )
+
+
+class KoyebProviderSettings(BaseModel):
+    """Koyeb provider configuration."""
+
+    token: str = Field(description="Koyeb API/Bearer token")
+
+
+class VerdaProviderSettings(BaseModel):
+    """Verda (DataCrunch) provider configuration."""
+
+    api_key: str = Field(description="Verda inference API key")
+    poll_interval: int = Field(default=5, ge=1, le=60, description="Async poll interval (seconds)")
+
+
+class ScalewayProviderSettings(BaseModel):
+    """Scaleway provider configuration."""
+
+    api_key: str | None = Field(default=None, description="Auth token for worker endpoint")
+
+
+class FileStorageSettings(BaseModel):
+    """S3-compatible storage for URL-based file transfer (e.g. Verda)."""
+
+    endpoint: str = Field(description="S3 endpoint URL")
+    bucket: str = Field(description="Bucket name")
+    access_key: str = Field(description="S3 access key")
+    secret_key: str = Field(description="S3 secret key")
+    region: str = Field(default="auto", description="S3 region")
+
+
+class InfraSettings(BaseModel):
+    """Common infrastructure lifecycle settings."""
+
+    docker_image: str = Field(
+        default="ghcr.io/harkhq/harkd/worker:latest",
+        description="Worker container image",
+    )
+    idle_timeout: int = Field(
+        default=300, ge=0, description="Seconds of inactivity before teardown (0=never)"
+    )
+    max_runtime: int = Field(
+        default=0, ge=0, description="Max seconds before forced teardown (0=unlimited)"
+    )
+    provisioning_timeout: int = Field(default=600, ge=60, description="Max wait for provisioning")
+
+
+class KoyebInfraSettings(BaseModel):
+    """Koyeb infrastructure management settings."""
+
+    api_token: str = Field(description="Koyeb API token for service management")
+    region: str = Field(default="fra", description="Deployment region")
+    instance_type: str = Field(
+        default="gpu-nvidia-rtx-4000-sff-ada", description="GPU instance type"
+    )
+    app_name: str = Field(default="hark-worker", description="Koyeb app/service name")
+    use_native_scale_to_zero: bool = Field(
+        default=True, description="Let Koyeb handle idle scaling (recommended)"
+    )
+
+
+class ScalewayInfraSettings(BaseModel):
+    """Scaleway infrastructure management settings."""
+
+    secret_key: str = Field(description="Scaleway secret key (SCW_SECRET_KEY)")
+    organization_id: str = Field(description="Scaleway organization ID")
+    project_id: str = Field(description="Scaleway project ID")
+    zone: str = Field(default="fr-par-2", description="Availability zone (must support GPUs)")
+    instance_type: str = Field(default="L4-1-24G", description="Instance type")
+    image_id: str | None = Field(
+        default=None, description="Pre-baked OS image UUID (optional, uses cloud-init if unset)"
+    )
+
+
+class DataCrunchInfraSettings(BaseModel):
+    """DataCrunch infrastructure management settings."""
+
+    client_id: str = Field(description="DataCrunch OAuth2 client ID")
+    client_secret: str = Field(description="DataCrunch OAuth2 client secret")
+    instance_type: str = Field(default="1L40S.6V", description="GPU instance type")
+    location: str = Field(default="FIN-01", description="Data center location")
+    ssh_key_ids: list[str] = Field(default_factory=list, description="SSH key IDs")
+    os_volume_id: str | None = Field(default=None, description="Pre-built OS volume ID")
+
+
+class TranscriptionSettings(BaseModel):
+    """Transcription backend configuration."""
+
+    backend: Literal["local", "remote", "koyeb", "verda", "scaleway"] = Field(
+        default="local", description="Transcription backend"
+    )
+    endpoint_url: str | None = Field(default=None, description="Remote worker endpoint URL")
+    worker_api_key: str | None = Field(default=None, description="Shared secret for worker auth")
+    remote_timeout: int = Field(default=3600, ge=60, description="Remote API timeout (seconds)")
+    max_retries: int = Field(default=2, ge=0, le=5, description="Max retries for remote failures")
+    fallback_to_local: bool = Field(
+        default=True, description="Fall back to local on remote failure"
+    )
+
+    # Provider-specific
+    koyeb: KoyebProviderSettings | None = None
+    verda: VerdaProviderSettings | None = None
+    scaleway: ScalewayProviderSettings | None = None
+
+    # Optional S3 for URL-based file transfer
+    file_storage: FileStorageSettings | None = None
+
+    # Infrastructure lifecycle management
+    managed: bool = Field(default=False, description="Enable infrastructure lifecycle management")
+    infra: InfraSettings | None = Field(
+        default=None, description="Infrastructure lifecycle settings (required when managed=True)"
+    )
+    koyeb_infra: KoyebInfraSettings | None = None
+    scaleway_infra: ScalewayInfraSettings | None = None
+    datacrunch_infra: DataCrunchInfraSettings | None = None
+
+    @model_validator(mode="after")
+    def validate_managed_config(self) -> "TranscriptionSettings":
+        """Validate managed mode has required infrastructure config."""
+        if not self.managed:
+            return self
+
+        if self.backend in ("local", "remote"):
+            return self
+
+        if self.infra is None:
+            raise ValueError("transcription.infra is required when managed=True")
+
+        if self.backend == "koyeb" and self.koyeb_infra is None:
+            raise ValueError("transcription.koyeb_infra is required for managed koyeb backend")
+
+        if self.backend == "scaleway" and self.scaleway_infra is None:
+            raise ValueError(
+                "transcription.scaleway_infra is required for managed scaleway backend"
+            )
+
+        if self.backend == "verda" and self.datacrunch_infra is None:
+            raise ValueError("transcription.datacrunch_infra is required for managed verda backend")
+
+        return self
 
 
 class LLMSettings(BaseModel):
@@ -134,6 +317,7 @@ class HarkdSettings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     recording: RecordingDefaults = Field(default_factory=RecordingDefaults)
+    transcription: TranscriptionSettings = Field(default_factory=TranscriptionSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
     # HuggingFace token for diarization (pyannote models)

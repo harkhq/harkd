@@ -4,11 +4,19 @@ Defines interfaces for storage implementations.
 Currently only filesystem, but designed for future extensibility.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 
-from harkd.storage.models import StorageRecording, StorageVoiceProfile
+from harkd.storage.models import (
+    SpeakerEmbeddings,
+    StorageChatThread,
+    StorageRecording,
+    StorageVoiceProfile,
+)
 
 __all__ = [
+    "ChatThreadStorage",
     "RecordingStorage",
     "VoiceProfileStorage",
 ]
@@ -111,6 +119,52 @@ class RecordingStorage(ABC):
         Raises:
             StorageError: If count fails
         """
+        pass
+
+    @abstractmethod
+    async def get_speaker_embeddings(self, recording_id: str) -> SpeakerEmbeddings | None:
+        """Get speaker embeddings for a recording.
+
+        Reads only the embeddings file, not the full metadata.
+
+        Args:
+            recording_id: Recording ID
+
+        Returns:
+            Speaker embeddings dict if available, None otherwise
+
+        Raises:
+            StorageError: If read fails
+        """
+        pass
+
+
+class ChatThreadStorage(ABC):
+    """Abstract interface for chat thread storage."""
+
+    @abstractmethod
+    async def create(self, thread: StorageChatThread) -> StorageChatThread:
+        """Create a new chat thread."""
+        pass
+
+    @abstractmethod
+    async def get(self, thread_id: str) -> StorageChatThread | None:
+        """Get a chat thread by ID."""
+        pass
+
+    @abstractmethod
+    async def list(self) -> list[StorageChatThread]:
+        """List all chat threads (metadata only, messages stripped)."""
+        pass
+
+    @abstractmethod
+    async def update(self, thread: StorageChatThread) -> StorageChatThread:
+        """Update an existing chat thread."""
+        pass
+
+    @abstractmethod
+    async def delete(self, thread_id: str) -> None:
+        """Delete a chat thread."""
         pass
 
 

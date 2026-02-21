@@ -98,9 +98,8 @@ def test_diarizer_lazy_loads_model(temp_audio):
         # Transcribe
         result = diarizer.transcribe_and_diarize(temp_audio)
 
-        # Model should now be loaded
+        # Model should have been loaded (freed after transcription for memory cleanup)
         wx.load_model.assert_called_once()
-        assert diarizer._model is not None
         assert isinstance(result.segments, list)
         assert isinstance(result.speakers, list)
 

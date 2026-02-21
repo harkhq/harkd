@@ -8,10 +8,16 @@ __all__ = [
     "NoActiveRecordingError",
     "RecordingNotFoundError",
     "VoiceProfileNotFoundError",
+    "ChatThreadNotFoundError",
+    "LLMNotConfiguredError",
     "StorageError",
     "InvalidStateError",
     "NoMicrophoneError",
     "NoLoopbackDeviceError",
+    "RetryNotAllowedError",
+    "RemoteTranscriptionError",
+    "InfraProvisioningError",
+    "InfraTeardownError",
 ]
 
 
@@ -74,6 +80,27 @@ class VoiceProfileNotFoundError(HarkdError):
         )
 
 
+class ChatThreadNotFoundError(HarkdError):
+    """Raised when a chat thread ID doesn't exist."""
+
+    def __init__(self, thread_id: str):
+        super().__init__(
+            message=f"Chat thread not found: {thread_id}",
+            code="CHAT_THREAD_NOT_FOUND",
+            details={"thread_id": thread_id},
+        )
+
+
+class LLMNotConfiguredError(HarkdError):
+    """Raised when LLM features are used but not configured."""
+
+    def __init__(self):
+        super().__init__(
+            message="LLM features are not enabled. Set llm.enabled=true in configuration.",
+            code="LLM_NOT_CONFIGURED",
+        )
+
+
 class StorageError(HarkdError):
     """Raised when filesystem/storage operations fail."""
 
@@ -116,4 +143,48 @@ class NoLoopbackDeviceError(HarkdError):
         super().__init__(
             message=message,
             code="NO_LOOPBACK_DEVICE",
+        )
+
+
+class RetryNotAllowedError(HarkdError):
+    """Raised when retry is not allowed for a recording."""
+
+    def __init__(self, recording_id: str, reason: str):
+        super().__init__(
+            message=f"Cannot retry recording {recording_id}: {reason}",
+            code="RETRY_NOT_ALLOWED",
+            details={"recording_id": recording_id, "reason": reason},
+        )
+
+
+class RemoteTranscriptionError(HarkdError):
+    """Raised when remote transcription backend fails."""
+
+    def __init__(self, message: str, provider: str, details: dict[str, Any] | None = None):
+        super().__init__(
+            message=message,
+            code="REMOTE_TRANSCRIPTION_ERROR",
+            details={"provider": provider, **(details or {})},
+        )
+
+
+class InfraProvisioningError(HarkdError):
+    """Raised when infrastructure provisioning fails."""
+
+    def __init__(self, message: str, provider: str = "", details: dict[str, Any] | None = None):
+        super().__init__(
+            message=message,
+            code="INFRA_PROVISIONING_ERROR",
+            details={"provider": provider, **(details or {})},
+        )
+
+
+class InfraTeardownError(HarkdError):
+    """Raised when infrastructure teardown fails."""
+
+    def __init__(self, message: str, provider: str = "", details: dict[str, Any] | None = None):
+        super().__init__(
+            message=message,
+            code="INFRA_TEARDOWN_ERROR",
+            details={"provider": provider, **(details or {})},
         )

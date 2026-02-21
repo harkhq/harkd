@@ -16,3 +16,4 @@ class Settings(BaseModel):
     diarization: bool = Field(description="Enable speaker diarization")
     noise_reduction: bool = Field(description="Enable noise reduction")
     normalization: bool = Field(description="Enable audio normalization")
+    mic_gain: float = Field(description="Microphone gain multiplier (1.0 = no gain)")

@@ -36,6 +36,10 @@ dependencies = [
     # Diarization
     "whisperx>=3.1.0",
 
+    # Remote transcription backends
+    "httpx>=0.27.0",
+    "boto3>=1.34.0",
+
     # LLM integration
     "langchain-core>=0.3.0",
     "langchain-openai>=0.2.0",
@@ -53,6 +57,7 @@ test = [
     "pyrefly>=0.45.0",
     "pre-commit>=3.0.0",
     "httpx>=0.27.0",
+    "python-multipart>=0.0.6",
 ]
 dev = [
     "harkd[test]",

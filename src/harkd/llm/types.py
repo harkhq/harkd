@@ -1,7 +1,7 @@
 """Shared types for the LLM abstraction layer."""
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
@@ -31,3 +31,15 @@ class MeetingMinutesResult:
     meeting_notes: list[dict[str, Any]] = field(default_factory=list)
     tasks: list[dict[str, Any]] = field(default_factory=list)
     decisions: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LLMStreamEvent:
+    """A single event from an LLM streaming response."""
+
+    type: Literal["token", "tool_call_start", "tool_call_args", "tool_call_end", "usage", "error"]
+    content: str = ""
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_call_index: int | None = None
+    usage: TokenUsage | None = None

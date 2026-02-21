@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from harkd.api.app import create_app
 from harkd.api.models.recording import RecordingStatus
 from harkd.config import HarkdSettings, StorageSettings
-from harkd.services.recording_service import RecordingService
+from harkd.services.processing_worker import ProcessingWorker
 from harkd.storage.models import StorageRecording
 
 
@@ -33,6 +33,7 @@ def client(settings):
 
     deps._recording_services.clear()
     deps._voice_profile_services.clear()
+    deps._processing_workers.clear()
 
     # Reset global recording state
     from harkd.state.recording_state import get_recording_state
@@ -91,11 +92,18 @@ def create_recording_in_storage(settings, recording):
         "speaker_level": recording.speaker_level,
         "processing_stage": recording.processing_stage,
         "processing_progress": recording.processing_progress,
+        "retry_count": recording.retry_count,
+        "max_retries": recording.max_retries,
+        "last_error": recording.last_error,
+        "last_error_at": (recording.last_error_at.isoformat() if recording.last_error_at else None),
+        "error_history": recording.error_history,
         "model": recording.model,
         "language": recording.language,
         "language_confidence": recording.language_confidence,
         "diarized": recording.diarized,
         "speakers": recording.speakers or [],
+        "speaker_embeddings": recording.speaker_embeddings,
+        "speaker_profiles": recording.speaker_profiles,
         "segments": recording.segments or [],
         "transcript": recording.transcript,
         "tags": recording.tags or [],
@@ -112,7 +120,7 @@ def create_recording_in_storage(settings, recording):
 
 @pytest.fixture
 def mock_transcriber():
-    """Mock transcription subprocess."""
+    """Mock transcription subprocess on the ProcessingWorker."""
     mock_result = {
         "text": "Hello world",
         "language": "en",
@@ -131,12 +139,10 @@ def mock_transcriber():
         ],
     }
 
-    async def mock_run_subprocess(
-        self, recording_id, audio_path, model_name, language, word_timestamps
-    ):
+    async def mock_run_subprocess(self, *args, **kwargs):
         return mock_result
 
-    with patch.object(RecordingService, "_run_transcription_subprocess", mock_run_subprocess):
+    with patch.object(ProcessingWorker, "_run_transcription", mock_run_subprocess):
         yield mock_result
 
 
@@ -595,7 +601,7 @@ class TestListRecordings:
 
     def test_list_recordings_filter_created_after(self, client, settings):
         """Test created_after returns only recordings at or after the cutoff."""
-        base = datetime(2026, 1, 10, 12, 0, 0)
+        base = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
         for i in range(3):
             create_recording_in_storage(
                 settings,
@@ -609,7 +615,8 @@ class TestListRecordings:
                 ),
             )
 
-        cutoff = (base + timedelta(hours=1)).isoformat()
+        # Use Z suffix (not +00:00) to avoid URL encoding issues with +
+        cutoff = (base + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         response = client.get(f"/api/v1/recordings?created_after={cutoff}")
         assert response.status_code == 200
         ids = {r["id"] for r in response.json()["recordings"]}
@@ -617,7 +624,7 @@ class TestListRecordings:
 
     def test_list_recordings_filter_created_before(self, client, settings):
         """Test created_before returns only recordings at or before the cutoff."""
-        base = datetime(2026, 1, 10, 12, 0, 0)
+        base = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
         for i in range(3):
             create_recording_in_storage(
                 settings,
@@ -631,7 +638,7 @@ class TestListRecordings:
                 ),
             )
 
-        cutoff = (base + timedelta(hours=1)).isoformat()
+        cutoff = (base + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         response = client.get(f"/api/v1/recordings?created_before={cutoff}")
         assert response.status_code == 200
         ids = {r["id"] for r in response.json()["recordings"]}
@@ -639,7 +646,7 @@ class TestListRecordings:
 
     def test_list_recordings_date_range(self, client, settings):
         """Test combining created_after and created_before filters."""
-        base = datetime(2026, 1, 10, 12, 0, 0)
+        base = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
         for i in range(5):
             create_recording_in_storage(
                 settings,
@@ -653,8 +660,8 @@ class TestListRecordings:
                 ),
             )
 
-        after = (base + timedelta(hours=1)).isoformat()
-        before = (base + timedelta(hours=3)).isoformat()
+        after = (base + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        before = (base + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         response = client.get(f"/api/v1/recordings?created_after={after}&created_before={before}")
         assert response.status_code == 200
         ids = {r["id"] for r in response.json()["recordings"]}
@@ -891,12 +898,94 @@ class TestUpdateRecording:
         data = response.json()
         assert data["title"] == "My Meeting"
 
+    def test_update_tasks_via_patch(self, client, settings):
+        """Test updating tasks via PATCH persists and is retrievable."""
+        recording = StorageRecording(
+            id="test-tasks",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            tasks=[],
+            settings={},
+        )
+        create_recording_in_storage(settings, recording)
+
+        tasks = [{"task": "Review PR", "done": False}, {"task": "Deploy", "done": True}]
+        response = client.patch(
+            "/api/v1/recordings/test-tasks",
+            json={"tasks": tasks},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["tasks"]) == 2
+        assert data["tasks"][0]["task"] == "Review PR"
+        assert data["tasks"][1]["done"] is True
+
+        # Verify persisted via GET
+        response = client.get("/api/v1/recordings/test-tasks")
+        assert response.status_code == 200
+        assert len(response.json()["tasks"]) == 2
+
+        # Verify list endpoint still works
+        response = client.get("/api/v1/recordings")
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+
+    def test_update_decisions_via_patch(self, client, settings):
+        """Test updating decisions via PATCH persists and is retrievable."""
+        recording = StorageRecording(
+            id="test-decisions",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            decisions=[],
+            settings={},
+        )
+        create_recording_in_storage(settings, recording)
+
+        decisions = ["Use React", "Deploy on Friday"]
+        response = client.patch(
+            "/api/v1/recordings/test-decisions",
+            json={"decisions": decisions},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["decisions"] == ["Use React", "Deploy on Friday"]
+
+        # Verify persisted via GET
+        response = client.get("/api/v1/recordings/test-decisions")
+        assert response.status_code == 200
+        assert response.json()["decisions"] == ["Use React", "Deploy on Friday"]
+
+    def test_tags_in_list_response(self, client, settings):
+        """Test that tags appear correctly in list response items."""
+        recording = StorageRecording(
+            id="test-tags",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Tagged Recording",
+            duration=10.0,
+            tags=["standup", "weekly"],
+            settings={},
+        )
+        create_recording_in_storage(settings, recording)
+
+        response = client.get("/api/v1/recordings")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["recordings"][0]["tags"] == ["standup", "weekly"]
+
 
 class TestDeleteRecording:
     """Tests for DELETE /api/v1/recordings/{id}."""
 
-    def test_delete_recording(self, client, settings):
-        """Test deleting a recording removes it completely."""
+    def test_delete_complete_recording(self, client, settings):
+        """Test deleting a complete recording removes it completely."""
         # Create multiple recordings
         for i in range(3):
             recording = StorageRecording(
@@ -942,3 +1031,228 @@ class TestDeleteRecording:
         response = client.delete("/api/v1/recordings/nonexistent-id")
 
         assert response.status_code == 404
+        error = response.json()
+        assert error["detail"]["error"]["code"] == "RECORDING_NOT_FOUND"
+
+    def test_delete_active_recording(self, client, mock_recorder):
+        """Test deleting an active (recording-state) recording stops and removes it."""
+        # Start a recording
+        response = client.post("/api/v1/recordings", json={"title": "Active Test"})
+        assert response.status_code == 201
+        recording_id = response.json()["id"]
+
+        # Verify it's active
+        response = client.get("/api/v1/recordings/active")
+        assert response.status_code == 200
+        assert response.json()["id"] == recording_id
+
+        # Delete the active recording
+        response = client.delete(f"/api/v1/recordings/{recording_id}")
+        assert response.status_code == 204
+
+        # Verify recording is gone
+        response = client.get(f"/api/v1/recordings/{recording_id}")
+        assert response.status_code == 404
+
+    def test_delete_active_recording_clears_active_state(self, client, mock_recorder):
+        """Test that deleting an active recording clears the active recording state."""
+        # Start a recording
+        response = client.post("/api/v1/recordings", json={"title": "Clear State Test"})
+        assert response.status_code == 201
+        recording_id = response.json()["id"]
+
+        # Delete it
+        response = client.delete(f"/api/v1/recordings/{recording_id}")
+        assert response.status_code == 204
+
+        # GET /active should now return 409 (no active recording)
+        response = client.get("/api/v1/recordings/active")
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"]["code"] == "NO_ACTIVE_RECORDING"
+
+    def test_delete_processing_recording(self, client, settings):
+        """Test deleting a processing recording removes it."""
+        recording = StorageRecording(
+            id="proc-001",
+            status=RecordingStatus.PROCESSING.value,
+            created_at=datetime.now(UTC),
+            title="Processing Recording",
+            duration=15.0,
+            settings={},
+        )
+        create_recording_in_storage(settings, recording)
+
+        # Verify it exists
+        response = client.get("/api/v1/recordings/proc-001")
+        assert response.status_code == 200
+        assert response.json()["status"] == "processing"
+
+        # Delete it
+        response = client.delete("/api/v1/recordings/proc-001")
+        assert response.status_code == 204
+
+        # Verify it's gone
+        response = client.get("/api/v1/recordings/proc-001")
+        assert response.status_code == 404
+
+        # Verify physical directory is removed
+        recording_dir = settings.storage.base_path / "recordings" / "proc-001"
+        assert not recording_dir.exists()
+
+    def test_delete_allows_new_recording(self, client, mock_recorder):
+        """Test that after deleting an active recording, a new one can be started."""
+        # Start a recording
+        response = client.post("/api/v1/recordings", json={"title": "First"})
+        assert response.status_code == 201
+        first_id = response.json()["id"]
+
+        # Delete it
+        response = client.delete(f"/api/v1/recordings/{first_id}")
+        assert response.status_code == 204
+
+        # Start a new recording — should succeed (no conflict)
+        response = client.post("/api/v1/recordings", json={"title": "Second"})
+        assert response.status_code == 201
+        assert response.json()["title"] == "Second"
+
+
+class TestRetryRecording:
+    """Tests for POST /api/v1/recordings/{id}/retry."""
+
+    def test_retry_recording_success(self, client, settings):
+        """Test retrying a failed recording."""
+        recording = StorageRecording(
+            id="failed-001",
+            status="error",
+            created_at=datetime.now(UTC),
+            title="Failed Recording",
+            duration=10.0,
+            settings={},
+            retry_count=1,
+            last_error="Transcription timed out after 1800s",
+        )
+        create_recording_in_storage(settings, recording)
+
+        response = client.post("/api/v1/recordings/failed-001/retry")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "processing"
+        assert data["id"] == "failed-001"
+
+    def test_retry_recording_not_found(self, client):
+        """Test retrying a nonexistent recording."""
+        response = client.post("/api/v1/recordings/nonexistent-id/retry")
+
+        assert response.status_code == 404
+
+    def test_retry_recording_wrong_status(self, client, settings):
+        """Test retrying a processing recording returns 409."""
+        recording = StorageRecording(
+            id="processing-001",
+            status="processing",
+            created_at=datetime.now(UTC),
+            title="Processing Recording",
+            duration=10.0,
+            settings={},
+        )
+        create_recording_in_storage(settings, recording)
+
+        response = client.post("/api/v1/recordings/processing-001/retry")
+
+        assert response.status_code == 409
+        error = response.json()
+        assert error["detail"]["error"]["code"] == "RETRY_NOT_ALLOWED"
+
+    def test_retry_response_includes_retry_fields(self, client, settings):
+        """Test that retry response includes retry_count and last_error."""
+        recording = StorageRecording(
+            id="err-001",
+            status="error",
+            created_at=datetime.now(UTC),
+            title="Error Recording",
+            duration=10.0,
+            settings={},
+            retry_count=2,
+            last_error="OOM killed",
+        )
+        create_recording_in_storage(settings, recording)
+
+        # Check the GET response includes retry fields
+        response = client.get("/api/v1/recordings/err-001")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["retry_count"] == 2
+        assert data["last_error"] == "OOM killed"
+
+
+class TestSpeakerProfileIds:
+    """Tests for PATCH /api/v1/recordings/{id} with speaker_profile_ids."""
+
+    def test_update_with_speaker_profile_ids(self, client, settings):
+        """Test linking speakers to existing voice profiles via PATCH."""
+        # Create a voice profile first
+        response = client.post(
+            "/api/v1/voice-profiles",
+            json={"name": "Alice"},
+        )
+        assert response.status_code == 201
+        profile_id = response.json()["id"]
+
+        # Create a completed recording with speaker embeddings
+        recording = StorageRecording(
+            id="test-profile-link",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            segments=[
+                {"start": 0.0, "end": 5.0, "text": "Hello", "speaker": "SPEAKER_00", "words": []},
+            ],
+            speakers=["SPEAKER_00"],
+            speaker_embeddings={"SPEAKER_00": [0.1, 0.2, 0.3]},
+            settings={},
+        )
+        create_recording_in_storage(settings, recording)
+
+        # PATCH with speaker_profile_ids
+        response = client.patch(
+            "/api/v1/recordings/test-profile-link",
+            json={
+                "speakers": {"SPEAKER_00": "Alice"},
+                "speaker_profile_ids": {"SPEAKER_00": profile_id},
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["speaker_profiles"]["SPEAKER_00"] == profile_id
+
+    def test_update_with_invalid_profile_id_returns_422(self, client, settings):
+        """Test that an invalid profile ID returns 422."""
+        recording = StorageRecording(
+            id="test-bad-profile",
+            status=RecordingStatus.COMPLETE.value,
+            created_at=datetime.now(UTC),
+            title="Test",
+            duration=10.0,
+            segments=[
+                {"start": 0.0, "end": 5.0, "text": "Hello", "speaker": "SPEAKER_00", "words": []},
+            ],
+            speakers=["SPEAKER_00"],
+            speaker_embeddings={"SPEAKER_00": [0.1, 0.2, 0.3]},
+            settings={},
+        )
+        create_recording_in_storage(settings, recording)
+
+        response = client.patch(
+            "/api/v1/recordings/test-bad-profile",
+            json={
+                "speakers": {"SPEAKER_00": "Alice"},
+                "speaker_profile_ids": {"SPEAKER_00": "nonexistent-profile"},
+            },
+        )
+
+        assert response.status_code == 422
+        error = response.json()
+        assert error["detail"]["error"]["code"] == "VOICE_PROFILE_NOT_FOUND"

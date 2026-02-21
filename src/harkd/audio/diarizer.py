@@ -4,9 +4,13 @@ Provides speaker identification and word-level speaker timestamps.
 Uses WhisperX pipeline: transcribe -> align -> diarize -> assign speakers.
 """
 
+import gc
 import logging
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from harkd.audio._system import detect_batch_size, detect_cpu_threads
 
 __all__ = [
     "WordSegment",
@@ -48,6 +52,7 @@ class DiarizationResult:
     language: str
     language_probability: float
     duration: float
+    speaker_embeddings: dict[str, list[float]] | None = None
 
 
 def _renumber_speaker(speaker: str) -> str:
@@ -83,22 +88,46 @@ class Diarizer:
         device: str = "auto",
         hf_token: str | None = None,
         num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+        clustering_threshold: float | None = None,
         compute_type: str = "auto",
+        beam_size: int = 3,
+        batch_size: int = 16,
+        vad_onset: float = 0.5,
+        vad_offset: float = 0.363,
+        vad_method: str = "pyannote",
     ):
         """Initialize diarizer.
 
         Args:
-            model_name: Whisper model name (tiny, base, small, medium, large, large-v2, large-v3)
+            model_name: Whisper model name or HuggingFace model path
             device: Device to use ("cpu", "cuda", or "auto")
             hf_token: HuggingFace token for pyannote models (required for diarization)
             num_speakers: Expected number of speakers (helps accuracy, None = auto-detect)
+            min_speakers: Minimum number of speakers
+            max_speakers: Maximum number of speakers
+            clustering_threshold: Agglomerative clustering threshold (lower = merge more)
             compute_type: Compute type ("int8", "float16", or "auto")
+            beam_size: Beam size for decoding (1 = greedy)
+            batch_size: Batch size for transcription
+            vad_onset: VAD onset threshold
+            vad_offset: VAD offset threshold
+            vad_method: VAD method ("pyannote" or "silero")
         """
         self.model_name = model_name
         self.device = device
         self.hf_token = hf_token
         self.num_speakers = num_speakers
+        self.min_speakers = min_speakers
+        self.max_speakers = max_speakers
+        self.clustering_threshold = clustering_threshold
         self.compute_type = compute_type
+        self.beam_size = beam_size
+        self.batch_size = batch_size
+        self.vad_onset = vad_onset
+        self.vad_offset = vad_offset
+        self.vad_method = vad_method
         self._model = None
         self._actual_device: str | None = None
 
@@ -152,12 +181,20 @@ class Diarizer:
                 logger.debug(f"Auto-detected compute type: {compute_type}")
 
             try:
+                threads = detect_cpu_threads() if device == "cpu" else 4
                 self._model = whisperx.load_model(
                     self.model_name,
                     device=device,
                     compute_type=compute_type,
+                    threads=threads,
+                    asr_options={"beam_size": self.beam_size},
+                    vad_options={
+                        "vad_onset": self.vad_onset,
+                        "vad_offset": self.vad_offset,
+                    },
+                    vad_method=self.vad_method,
                 )
-                logger.info("WhisperX model loaded successfully")
+                logger.info("WhisperX model loaded successfully (threads=%d)", threads)
             except Exception as e:
                 logger.error(f"Failed to load WhisperX model: {e}", exc_info=True)
                 raise
@@ -220,9 +257,17 @@ class Diarizer:
             logger.info("Transcribing audio")
             if self._model is None:
                 raise RuntimeError("Model not loaded")
-            result = self._model.transcribe(audio, batch_size=16, language=language)
+            result = self._model.transcribe(audio, batch_size=self.batch_size, language=language)
             detected_language = result.get("language", "unknown")
             logger.debug(f"Detected language: {detected_language}")
+
+            # Free ASR model before loading alignment model
+            logger.debug("Releasing ASR model to free memory")
+            self._model = None
+            gc.collect()
+            _torch = sys.modules.get("torch")
+            if _torch is not None:
+                _torch.cuda.empty_cache()
 
             # Align (get word-level timestamps)
             logger.info("Aligning transcription for word timestamps")
@@ -239,6 +284,14 @@ class Diarizer:
                 return_char_alignments=False,
             )
 
+            # Free alignment model before loading diarization model
+            logger.debug("Releasing alignment model to free memory")
+            del model_a, metadata
+            gc.collect()
+            _torch = sys.modules.get("torch")
+            if _torch is not None:
+                _torch.cuda.empty_cache()
+
             # Diarize (identify speakers)
             logger.info("Running speaker diarization")
             diarize_model = whisperx.diarize.DiarizationPipeline(
@@ -254,21 +307,58 @@ class Diarizer:
                     "https://huggingface.co/pyannote/speaker-diarization"
                 )
 
+            # Increase pyannote batch sizes (defaults are 1, far too slow on CPU)
+            batch_size = detect_batch_size()
+            diarize_model.model.embedding_batch_size = batch_size
+            diarize_model.model.segmentation_batch_size = batch_size
+            logger.info(
+                "Diarization batch sizes set to %d (embedding + segmentation)",
+                batch_size,
+            )
+
             # Set speaker constraints if specified
             diarize_kwargs: dict[str, int] = {}
             if self.num_speakers is not None:
                 diarize_kwargs["min_speakers"] = self.num_speakers
                 diarize_kwargs["max_speakers"] = self.num_speakers
                 logger.debug(f"Speaker constraint: {self.num_speakers} speakers")
+            else:
+                if self.min_speakers is not None:
+                    diarize_kwargs["min_speakers"] = self.min_speakers
+                    logger.debug(f"Min speakers: {self.min_speakers}")
+                if self.max_speakers is not None:
+                    diarize_kwargs["max_speakers"] = self.max_speakers
+                    logger.debug(f"Max speakers: {self.max_speakers}")
 
-            diarize_segments = diarize_model(audio, **diarize_kwargs)  # type: ignore[arg-type]
+            # Apply clustering threshold override
+            if self.clustering_threshold is not None:
+                diarize_model.model.clustering.threshold = self.clustering_threshold
+                logger.debug(f"Clustering threshold: {self.clustering_threshold}")
+
+            diarize_result = diarize_model(audio, return_embeddings=True, **diarize_kwargs)  # type: ignore[arg-type]
+
+            # Handle tuple return when return_embeddings=True
+            if isinstance(diarize_result, tuple):
+                diarize_segments, raw_embeddings = diarize_result
+            else:
+                diarize_segments = diarize_result
+                raw_embeddings = None
 
             # Assign speakers to words
             logger.debug("Assigning speakers to words")
             result = whisperx.assign_word_speakers(diarize_segments, result)
 
+            # Convert embeddings to plain Python types with renumbered speaker keys
+            speaker_embeddings: dict[str, list[float]] | None = None
+            if raw_embeddings is not None:
+                speaker_embeddings = {
+                    _renumber_speaker(k): [float(x) for x in v] for k, v in raw_embeddings.items()
+                }
+
             # Convert to our format
-            diarization_result = self._convert_result(result, detected_language, language)
+            diarization_result = self._convert_result(
+                result, detected_language, language, speaker_embeddings
+            )
 
             logger.info(
                 f"Diarization complete: {len(diarization_result.segments)} segments, "
@@ -286,6 +376,7 @@ class Diarizer:
         whisperx_result: dict,
         detected_language: str,
         explicit_language: str | None,
+        speaker_embeddings: dict[str, list[float]] | None = None,
     ) -> DiarizationResult:
         """Convert WhisperX output to DiarizationResult.
 
@@ -293,6 +384,7 @@ class Diarizer:
             whisperx_result: Raw result from WhisperX
             detected_language: Language detected by WhisperX
             explicit_language: Language explicitly specified by user (or None)
+            speaker_embeddings: Optional speaker embedding vectors
 
         Returns:
             Standardized DiarizationResult
@@ -342,4 +434,5 @@ class Diarizer:
             language=detected_language,
             language_probability=language_probability,
             duration=duration,
+            speaker_embeddings=speaker_embeddings,
         )

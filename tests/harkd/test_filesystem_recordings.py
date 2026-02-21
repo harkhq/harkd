@@ -329,6 +329,135 @@ async def test_atomic_write_does_not_corrupt_on_failure(temp_storage, sample_rec
 
 
 @pytest.mark.asyncio
+async def test_create_with_embeddings_writes_separate_file(temp_storage):
+    """Test that create with speaker_embeddings produces a separate embeddings.json."""
+    rec = StorageRecording(
+        id="rec-emb",
+        status="complete",
+        created_at=datetime(2026, 1, 15, 10, 0, 0),
+        title="Embeddings Test",
+        duration=60.0,
+        settings={},
+        speaker_embeddings={"SPEAKER_00": [0.1, 0.2], "SPEAKER_01": [0.3, 0.4]},
+    )
+    await temp_storage.create(rec)
+
+    recording_dir = temp_storage.recordings_dir / "rec-emb"
+
+    # embeddings.json should exist with the embeddings data
+    embeddings_file = recording_dir / "embeddings.json"
+    assert embeddings_file.exists()
+    with open(embeddings_file) as f:
+        emb_data = json.load(f)
+    assert emb_data == {"SPEAKER_00": [0.1, 0.2], "SPEAKER_01": [0.3, 0.4]}
+
+    # metadata.json should NOT contain speaker_embeddings
+    metadata_file = recording_dir / "metadata.json"
+    with open(metadata_file) as f:
+        meta_data = json.load(f)
+    assert "speaker_embeddings" not in meta_data
+
+
+@pytest.mark.asyncio
+async def test_get_merges_embeddings_from_separate_file(temp_storage):
+    """Test that get() merges embeddings from the separate embeddings.json."""
+    rec = StorageRecording(
+        id="rec-merge",
+        status="complete",
+        created_at=datetime(2026, 1, 15, 10, 0, 0),
+        title="Merge Test",
+        duration=60.0,
+        settings={},
+        speaker_embeddings={"SPEAKER_00": [0.5, 0.6]},
+    )
+    await temp_storage.create(rec)
+
+    retrieved = await temp_storage.get("rec-merge")
+    assert retrieved is not None
+    assert retrieved.speaker_embeddings == {"SPEAKER_00": [0.5, 0.6]}
+
+
+@pytest.mark.asyncio
+async def test_list_returns_none_embeddings(temp_storage):
+    """Test that list() returns recordings with speaker_embeddings=None."""
+    rec = StorageRecording(
+        id="rec-list-emb",
+        status="complete",
+        created_at=datetime(2026, 1, 15, 10, 0, 0),
+        title="List Test",
+        duration=60.0,
+        settings={},
+        speaker_embeddings={"SPEAKER_00": [0.1]},
+    )
+    await temp_storage.create(rec)
+
+    recordings = await temp_storage.list()
+    assert len(recordings) == 1
+    assert recordings[0].speaker_embeddings is None
+
+
+@pytest.mark.asyncio
+async def test_get_speaker_embeddings_returns_data(temp_storage):
+    """Test get_speaker_embeddings() returns correct data."""
+    rec = StorageRecording(
+        id="rec-get-emb",
+        status="complete",
+        created_at=datetime(2026, 1, 15, 10, 0, 0),
+        title="Get Embeddings",
+        duration=60.0,
+        settings={},
+        speaker_embeddings={"SPEAKER_00": [1.0, 2.0]},
+    )
+    await temp_storage.create(rec)
+
+    embeddings = await temp_storage.get_speaker_embeddings("rec-get-emb")
+    assert embeddings == {"SPEAKER_00": [1.0, 2.0]}
+
+
+@pytest.mark.asyncio
+async def test_get_speaker_embeddings_returns_none_when_missing(temp_storage):
+    """Test get_speaker_embeddings() returns None when no embeddings exist."""
+    rec = StorageRecording(
+        id="rec-no-emb",
+        status="complete",
+        created_at=datetime(2026, 1, 15, 10, 0, 0),
+        title="No Embeddings",
+        duration=60.0,
+        settings={},
+    )
+    await temp_storage.create(rec)
+
+    embeddings = await temp_storage.get_speaker_embeddings("rec-no-emb")
+    assert embeddings is None
+
+
+@pytest.mark.asyncio
+async def test_update_with_none_embeddings_removes_file(temp_storage):
+    """Test that updating with speaker_embeddings=None removes embeddings.json."""
+    rec = StorageRecording(
+        id="rec-rm-emb",
+        status="complete",
+        created_at=datetime(2026, 1, 15, 10, 0, 0),
+        title="Remove Embeddings",
+        duration=60.0,
+        settings={},
+        speaker_embeddings={"SPEAKER_00": [0.1]},
+    )
+    await temp_storage.create(rec)
+
+    recording_dir = temp_storage.recordings_dir / "rec-rm-emb"
+    assert (recording_dir / "embeddings.json").exists()
+
+    # Update with no embeddings
+    rec.speaker_embeddings = None
+    await temp_storage.update(rec)
+
+    assert not (recording_dir / "embeddings.json").exists()
+    retrieved = await temp_storage.get("rec-rm-emb")
+    assert retrieved.speaker_embeddings is None
+
+
+@pytest.mark.asyncio
 async def test_corrupted_recordings_are_logged(temp_storage, caplog):
     """Test that corrupted recordings are logged and skipped during list."""
     # Create a valid recording
@@ -354,3 +483,84 @@ async def test_corrupted_recordings_are_logged(temp_storage, caplog):
     assert len(recordings) == 1
     assert recordings[0].id == "valid-rec"
     assert "corrupted" in caplog.text.lower() or "Skipping" in caplog.text
+
+
+# --- Pre-migration backward compatibility ---
+
+
+@pytest.mark.asyncio
+async def test_get_reads_embeddings_from_legacy_metadata(temp_storage):
+    """Pre-migration: metadata.json contains speaker_embeddings, no embeddings.json.
+
+    get() should still return the embeddings from metadata.json.
+    """
+    rec_dir = temp_storage.recordings_dir / "legacy-rec"
+    rec_dir.mkdir(parents=True)
+
+    metadata = {
+        "id": "legacy-rec",
+        "status": "complete",
+        "created_at": "2025-06-01T00:00:00",
+        "title": "Legacy",
+        "duration": 60.0,
+        "settings": {},
+        "segments": [],
+        "speaker_embeddings": {"SPEAKER_00": [0.1, 0.2, 0.3]},
+    }
+    (rec_dir / "metadata.json").write_text(json.dumps(metadata))
+
+    recording = await temp_storage.get("legacy-rec")
+    assert recording is not None
+    assert recording.speaker_embeddings == {"SPEAKER_00": [0.1, 0.2, 0.3]}
+
+
+@pytest.mark.asyncio
+async def test_get_prefers_embeddings_json_over_metadata(temp_storage):
+    """If both metadata.json and embeddings.json have embeddings, embeddings.json wins."""
+    rec_dir = temp_storage.recordings_dir / "both-rec"
+    rec_dir.mkdir(parents=True)
+
+    metadata = {
+        "id": "both-rec",
+        "status": "complete",
+        "created_at": "2025-06-01T00:00:00",
+        "title": "Both",
+        "duration": 60.0,
+        "settings": {},
+        "segments": [],
+        "speaker_embeddings": {"SPEAKER_00": [0.0, 0.0]},
+    }
+    (rec_dir / "metadata.json").write_text(json.dumps(metadata))
+    (rec_dir / "embeddings.json").write_text(json.dumps({"SPEAKER_00": [1.0, 1.0]}))
+
+    recording = await temp_storage.get("both-rec")
+    assert recording.speaker_embeddings == {"SPEAKER_00": [1.0, 1.0]}
+
+
+@pytest.mark.asyncio
+async def test_get_then_update_preserves_embeddings(temp_storage):
+    """Round-trip: get() loads embeddings, update() with changed title preserves them."""
+    rec = StorageRecording(
+        id="roundtrip",
+        status="complete",
+        created_at=datetime(2026, 1, 15, 10, 0, 0),
+        title="Original",
+        duration=60.0,
+        settings={},
+        speaker_embeddings={"SPEAKER_00": [0.5, 0.6]},
+    )
+    await temp_storage.create(rec)
+
+    loaded = await temp_storage.get("roundtrip")
+    loaded.title = "Updated"
+    await temp_storage.update(loaded)
+
+    reloaded = await temp_storage.get("roundtrip")
+    assert reloaded.title == "Updated"
+    assert reloaded.speaker_embeddings == {"SPEAKER_00": [0.5, 0.6]}
+
+    # Verify on disk: metadata.json should not have speaker_embeddings
+    meta = json.loads((temp_storage.recordings_dir / "roundtrip" / "metadata.json").read_text())
+    assert "speaker_embeddings" not in meta
+    emb = json.loads((temp_storage.recordings_dir / "roundtrip" / "embeddings.json").read_text())
+    assert emb == {"SPEAKER_00": [0.5, 0.6]}
