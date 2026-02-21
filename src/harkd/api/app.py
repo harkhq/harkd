@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     storage_path = settings.storage.base_path
     worker = get_processing_worker_eager(storage_path, settings)
-    # worker.start()
+    worker.start()
     recovered = await worker.recover()
     if recovered:
         logger.info(f"Recovered {recovered} stuck/retryable recordings")
