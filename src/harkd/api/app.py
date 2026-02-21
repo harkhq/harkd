@@ -34,6 +34,10 @@ def _configure_logging(level: str) -> None:
         harkd_logger.addHandler(handler)
     harkd_logger.setLevel(level.upper())
 
+    # Silence noisy websockets debug output (keepalive pings, connection lifecycle)
+    for _ws_logger in ("websockets", "websockets.client", "websockets.server"):
+        logging.getLogger(_ws_logger).setLevel(logging.WARNING)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
